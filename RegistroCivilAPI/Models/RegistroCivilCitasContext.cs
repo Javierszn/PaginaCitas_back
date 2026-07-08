@@ -16,23 +16,14 @@ public partial class RegistroCivilCitasContext : DbContext
     }
 
     public virtual DbSet<BitacoraAuditorium> BitacoraAuditoria { get; set; }
-
     public virtual DbSet<CategoriasTramite> CategoriasTramites { get; set; }
-
     public virtual DbSet<Cita> Citas { get; set; }
-
     public virtual DbSet<Ciudadano> Ciudadanos { get; set; }
-
     public virtual DbSet<DiasInhabile> DiasInhabiles { get; set; }
-
     public virtual DbSet<HorariosSede> HorariosSedes { get; set; }
-
     public virtual DbSet<Role> Roles { get; set; }
-
     public virtual DbSet<Sede> Sedes { get; set; }
-
     public virtual DbSet<Tramite> Tramites { get; set; }
-
     public virtual DbSet<UsuariosInterno> UsuariosInternos { get; set; }
 
     protected override void OnConfiguring(DbContextOptionsBuilder optionsBuilder)
@@ -86,6 +77,16 @@ public partial class RegistroCivilCitasContext : DbContext
                 .HasMaxLength(100)
                 .IsUnicode(false)
                 .HasColumnName("nombre_categoria");
+
+            // --- TRADUCCIÓN DE LAS NUEVAS COLUMNAS DE CATEGORÍAS ---
+            entity.Property(e => e.Descripcion)
+                .HasColumnType("varchar(255)")
+                .HasColumnName("descripcion");
+
+            entity.Property(e => e.Activa)
+                .HasDefaultValue(true)
+                .HasColumnName("activa");
+            // -------------------------------------------------------
         });
 
         modelBuilder.Entity<Cita>(entity =>
@@ -120,7 +121,7 @@ public partial class RegistroCivilCitasContext : DbContext
                 .OnDelete(DeleteBehavior.ClientSetNull)
                 .HasConstraintName("FK__Citas__id_sede__4E88ABD4");
 
-            entity.HasOne(d => d.IdTramiteNavigation).WithMany(p => p.Cita)
+            entity.HasOne(d => d.IdTramiteNavigation).WithMany(p => p.Citas)
                 .HasForeignKey(d => d.IdTramite)
                 .OnDelete(DeleteBehavior.ClientSetNull)
                 .HasConstraintName("FK__Citas__id_tramit__4D94879B");
@@ -146,7 +147,7 @@ public partial class RegistroCivilCitasContext : DbContext
                 .IsUnicode(false)
                 .HasColumnName("nombre");
             entity.Property(e => e.OrigenRegistro)
-                .HasMaxLength(20)
+                .HasMaxLength(150)
                 .IsUnicode(false)
                 .HasColumnName("origen_registro");
             entity.Property(e => e.PrimerApellido)
@@ -258,6 +259,16 @@ public partial class RegistroCivilCitasContext : DbContext
                 .HasMaxLength(255)
                 .IsUnicode(false)
                 .HasColumnName("requisitos_url");
+
+            // --- TRADUCCIÓN DE LAS NUEVAS COLUMNAS DE TRÁMITES ---
+            entity.Property(e => e.Requisitos)
+                .HasColumnType("varchar(500)")
+                .HasColumnName("requisitos");
+
+            entity.Property(e => e.Activa)
+                .HasDefaultValue(true)
+                .HasColumnName("activa");
+            // -----------------------------------------------------
 
             entity.HasOne(d => d.IdCategoriaNavigation).WithMany(p => p.Tramites)
                 .HasForeignKey(d => d.IdCategoria)

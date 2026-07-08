@@ -94,8 +94,6 @@ namespace RegistroCivilAPI.Controllers
                         : $"{solicitud.EstadoRegistro} - {solicitud.MunicipioRegistro}";
 
                     if (string.IsNullOrWhiteSpace(origenRegistro)) origenRegistro = "MANUAL";
-
-                    // SEGUROS ANTI-ERRORES (Truncamos los textos si exceden el límite de la BD)
                     if (origenRegistro.Length > 145) origenRegistro = origenRegistro.Substring(0, 145);
 
                     string nombrePila = partesNombre.Length > 0 ? partesNombre[0] : "Sin Nombre";
@@ -157,6 +155,50 @@ namespace RegistroCivilAPI.Controllers
                 var errorReal = ex.InnerException != null ? ex.InnerException.Message : ex.Message;
                 return StatusCode(500, new { mensaje = "Error de base de datos", detalle = errorReal });
             }
+        }
+
+        // --- NUEVO: ENDPOINT PARA BUSCAR CITA POR FOLIO ---
+        [HttpGet("{folio}")]
+        public async Task<ActionResult> ObtenerCita(string folio)
+        {
+            var cita = await _context.Citas
+                .Include(c => c.IdCiudadanoNavigation)
+                .Include(c => c.IdTramiteNavigation)
+                .Include(c => c.IdSedeNavigation)
+                .FirstOrDefaultAsync(c => c.IdCita == folio);
+
+            if (cita == null) return NotFound(new { mensaje = "No se encontró ninguna cita registrada con este folio." });
+
+            return Ok(new
+            {
+                folio = cita.IdCita,
+                estatus = cita.Estatus,
+                fecha = cita.FechaHoraInicio.ToString("yyyy-MM-dd"),
+                hora = cita.FechaHoraInicio.ToString("HH:mm"),
+                tramite = cita.IdTramiteNavigation.NombreTramite,
+                costo = cita.IdTramiteNavigation.Costo,
+                duracion = cita.IdTramiteNavigation.DuracionMinutos,
+                sede = cita.IdSedeNavigation.Nombre,
+                direccion = cita.IdSedeNavigation.Direccion,
+                ciudadano = $"{cita.IdCiudadanoNavigation.Nombre} {cita.IdCiudadanoNavigation.PrimerApellido} {cita.IdCiudadanoNavigation.SegundoApellido}".Trim(),
+                curp = cita.IdCiudadanoNavigation.Curp
+            });
+        }
+
+        // --- NUEVO: ENDPOINT PARA CANCELAR CITA ---
+        [HttpPut("{folio}/cancelar")]
+        public async Task<ActionResult> CancelarCita(string folio)
+        {
+            var cita = await _context.Citas.FirstOrDefaultAsync(c => c.IdCita == folio);
+            if (cita == null) return NotFound(new { mensaje = "Cita no encontrada." });
+
+            if (cita.Estatus == "CANCELADA") return BadRequest(new { mensaje = "La cita ya se encuentra cancelada." });
+            if (cita.FechaHoraInicio < DateTime.Now) return BadRequest(new { mensaje = "No se puede cancelar una cita de una fecha que ya pasó." });
+
+            cita.Estatus = "CANCELADA";
+            await _context.SaveChangesAsync();
+
+            return Ok(new { mensaje = "Su cita ha sido cancelada con éxito. El espacio ha sido liberado." });
         }
     }
 
