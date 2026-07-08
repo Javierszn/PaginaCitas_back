@@ -1,0 +1,6 @@
+@RegistroCivilAPI_HostAddress = http://localhost:5076
+
+GET {{RegistroCivilAPI_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###
