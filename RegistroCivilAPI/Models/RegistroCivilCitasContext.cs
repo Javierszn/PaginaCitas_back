@@ -26,6 +26,9 @@ public partial class RegistroCivilCitasContext : DbContext
     public virtual DbSet<Tramite> Tramites { get; set; }
     public virtual DbSet<UsuariosInterno> UsuariosInternos { get; set; }
 
+    // TABLA NUEVA: AVISOS GLOBALES
+    public virtual DbSet<AvisoGlobal> AvisosGlobales { get; set; }
+
     protected override void OnConfiguring(DbContextOptionsBuilder optionsBuilder)
 #warning To protect potentially sensitive information in your connection string, you should move it out of source code. You can avoid scaffolding the connection string by using the Name= syntax to read it from configuration - see https://go.microsoft.com/fwlink/?linkid=2131148. For more guidance on storing connection strings, see https://go.microsoft.com/fwlink/?LinkId=723263.
         => optionsBuilder.UseSqlServer("Server=localhost\\SQLEXPRESS;Database=RegistroCivil_Citas;Trusted_Connection=True;TrustServerCertificate=True;");
@@ -78,7 +81,6 @@ public partial class RegistroCivilCitasContext : DbContext
                 .IsUnicode(false)
                 .HasColumnName("nombre_categoria");
 
-            // --- TRADUCCIÓN DE LAS NUEVAS COLUMNAS DE CATEGORÍAS ---
             entity.Property(e => e.Descripcion)
                 .HasColumnType("varchar(255)")
                 .HasColumnName("descripcion");
@@ -86,7 +88,6 @@ public partial class RegistroCivilCitasContext : DbContext
             entity.Property(e => e.Activa)
                 .HasDefaultValue(true)
                 .HasColumnName("activa");
-            // -------------------------------------------------------
         });
 
         modelBuilder.Entity<Cita>(entity =>
@@ -111,12 +112,12 @@ public partial class RegistroCivilCitasContext : DbContext
             entity.Property(e => e.IdSede).HasColumnName("id_sede");
             entity.Property(e => e.IdTramite).HasColumnName("id_tramite");
 
-            entity.HasOne(d => d.IdCiudadanoNavigation).WithMany(p => p.Cita)
+            entity.HasOne(d => d.IdCiudadanoNavigation).WithMany(p => p.Citas)
                 .HasForeignKey(d => d.IdCiudadano)
                 .OnDelete(DeleteBehavior.ClientSetNull)
                 .HasConstraintName("FK__Citas__id_ciudad__4CA06362");
 
-            entity.HasOne(d => d.IdSedeNavigation).WithMany(p => p.Cita)
+            entity.HasOne(d => d.IdSedeNavigation).WithMany(p => p.Citas)
                 .HasForeignKey(d => d.IdSede)
                 .OnDelete(DeleteBehavior.ClientSetNull)
                 .HasConstraintName("FK__Citas__id_sede__4E88ABD4");
@@ -260,7 +261,6 @@ public partial class RegistroCivilCitasContext : DbContext
                 .IsUnicode(false)
                 .HasColumnName("requisitos_url");
 
-            // --- TRADUCCIÓN DE LAS NUEVAS COLUMNAS DE TRÁMITES ---
             entity.Property(e => e.Requisitos)
                 .HasColumnType("varchar(500)")
                 .HasColumnName("requisitos");
@@ -268,7 +268,6 @@ public partial class RegistroCivilCitasContext : DbContext
             entity.Property(e => e.Activa)
                 .HasDefaultValue(true)
                 .HasColumnName("activa");
-            // -----------------------------------------------------
 
             entity.HasOne(d => d.IdCategoriaNavigation).WithMany(p => p.Tramites)
                 .HasForeignKey(d => d.IdCategoria)
@@ -312,6 +311,17 @@ public partial class RegistroCivilCitasContext : DbContext
                 .HasForeignKey(d => d.IdSede)
                 .OnDelete(DeleteBehavior.ClientSetNull)
                 .HasConstraintName("FK__Usuarios___id_se__3F466844");
+        });
+
+        // MAPEADO DE LA NUEVA TABLA AVISOS GLOBALES
+        modelBuilder.Entity<AvisoGlobal>(entity =>
+        {
+            entity.HasKey(e => e.IdAviso).HasName("PK_AvisosGlobales");
+            entity.ToTable("Avisos_Globales");
+            entity.Property(e => e.IdAviso).HasColumnName("id_aviso");
+            entity.Property(e => e.Titulo).HasMaxLength(100).IsUnicode(false).HasColumnName("titulo");
+            entity.Property(e => e.Mensaje).HasColumnType("text").HasColumnName("mensaje");
+            entity.Property(e => e.Activo).HasDefaultValue(true).HasColumnName("activo");
         });
 
         OnModelCreatingPartial(modelBuilder);

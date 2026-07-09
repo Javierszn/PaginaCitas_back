@@ -18,7 +18,5 @@ public partial class Tramite
     public bool? Activa { get; set; }
 
     public virtual CategoriasTramite IdCategoriaNavigation { get; set; } = null!;
-
-    
     public virtual ICollection<Cita> Citas { get; set; } = new List<Cita>();
 }
