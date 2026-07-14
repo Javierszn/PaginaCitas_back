@@ -126,12 +126,14 @@ namespace RegistroCivilAPI.Controllers
                     await _context.SaveChangesAsync();
                 }
 
-                var citaExistente = await _context.Citas
-                    .AnyAsync(c => c.IdCiudadano == ciudadano.IdCiudadano && c.Estatus == "AGENDADA");
+                // --- NUEVA LÓGICA DE RESTRICCIÓN DE CITAS ---
+                // Verifica si el ciudadano ya tiene una cita activa PARA ESTE MISMO TRÁMITE
+                var citaMismoTramite = await _context.Citas
+                    .AnyAsync(c => c.IdCiudadano == ciudadano.IdCiudadano && c.IdTramite == solicitud.IdTramite && c.Estatus == "AGENDADA");
 
-                if (citaExistente)
+                if (citaMismoTramite)
                 {
-                    return BadRequest(new { mensaje = "Alerta: Este ciudadano ya tiene una cita activa." });
+                    return BadRequest(new { mensaje = "Alerta: Usted ya tiene una cita agendada para este trámite específico. Por favor, seleccione otro servicio." });
                 }
 
                 var nuevaCita = new Cita
@@ -157,7 +159,6 @@ namespace RegistroCivilAPI.Controllers
             }
         }
 
-        // --- NUEVO: ENDPOINT PARA BUSCAR CITA POR FOLIO ---
         [HttpGet("{folio}")]
         public async Task<ActionResult> ObtenerCita(string folio)
         {
@@ -185,7 +186,6 @@ namespace RegistroCivilAPI.Controllers
             });
         }
 
-        // --- NUEVO: ENDPOINT PARA CANCELAR CITA ---
         [HttpPut("{folio}/cancelar")]
         public async Task<ActionResult> CancelarCita(string folio)
         {

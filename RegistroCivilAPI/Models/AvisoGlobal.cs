@@ -8,4 +8,5 @@ public partial class AvisoGlobal
     public string Titulo { get; set; } = null!;
     public string Mensaje { get; set; } = null!;
     public bool? Activo { get; set; }
+    public string? ImagenUrl { get; set; }
 }
