@@ -126,7 +126,7 @@ namespace RegistroCivilAPI.Controllers
                     await _context.SaveChangesAsync();
                 }
 
-                
+                // Verifica si el ciudadano ya tiene una cita activa PARA ESTE MISMO TRÁMITE
                 var citaMismoTramite = await _context.Citas
                     .AnyAsync(c => c.IdCiudadano == ciudadano.IdCiudadano && c.IdTramite == solicitud.IdTramite && c.Estatus == "AGENDADA");
 
@@ -200,20 +200,29 @@ namespace RegistroCivilAPI.Controllers
             return Ok(new { mensaje = "Su cita ha sido cancelada con éxito. El espacio ha sido liberado." });
         }
 
-        
+        // --- MÉTODOS DEL PANEL DE EMPLEADOS ---
 
         [HttpGet("PorSede/{idSede}")]
-        public async Task<ActionResult> ObtenerCitasPorSede(int idSede)
+        public async Task<ActionResult> ObtenerCitasPorSede(int idSede, [FromQuery] string? fecha = null)
         {
-            var hoy = DateTime.Today;
+            // Si no mandan fecha, usamos la de hoy. Si mandan, la convertimos.
+            DateTime fechaFiltro = DateTime.Today;
+            if (!string.IsNullOrEmpty(fecha) && DateTime.TryParse(fecha, out DateTime parsedDate))
+            {
+                fechaFiltro = parsedDate.Date;
+            }
+
             var citas = await _context.Citas
                 .Include(c => c.IdCiudadanoNavigation)
                 .Include(c => c.IdTramiteNavigation)
-                .Where(c => c.IdSede == idSede && c.FechaHoraInicio.Date == hoy)
+                .Where(c => c.IdSede == idSede &&
+                            c.FechaHoraInicio.Year == fechaFiltro.Year &&
+                            c.FechaHoraInicio.Month == fechaFiltro.Month &&
+                            c.FechaHoraInicio.Day == fechaFiltro.Day)
                 .OrderBy(c => c.FechaHoraInicio)
                 .Select(c => new {
                     folio = c.IdCita,
-                    ciudadano = $"{c.IdCiudadanoNavigation.Nombre} {c.IdCiudadanoNavigation.PrimerApellido}",
+                    ciudadano = $"{c.IdCiudadanoNavigation.Nombre} {c.IdCiudadanoNavigation.PrimerApellido} {c.IdCiudadanoNavigation.SegundoApellido}".Trim(),
                     curp = c.IdCiudadanoNavigation.Curp,
                     tramite = c.IdTramiteNavigation.NombreTramite,
                     hora = c.FechaHoraInicio.ToString("HH:mm"),
@@ -228,17 +237,18 @@ namespace RegistroCivilAPI.Controllers
         public async Task<ActionResult> ActualizarEstatus(string folio, [FromBody] CambioEstatusDTO dto)
         {
             var cita = await _context.Citas.FirstOrDefaultAsync(c => c.IdCita == folio);
-            if (cita == null) return NotFound("Cita no encontrada.");
+            if (cita == null) return NotFound(new { mensaje = "Cita no encontrada." });
 
             string valorAnterior = cita.Estatus;
             cita.Estatus = dto.NuevoEstatus;
 
+            // Registrar en Bitácora
             var bitacora = new BitacoraAuditorium
             {
                 IdUsuarioInterno = dto.IdUsuarioInterno,
                 TablaAfectada = "Citas",
                 AccionRealizada = "UPDATE",
-                RegistroId = 1, 
+                RegistroId = 1, // Nota: La tabla pide int, aquí usamos 1 temporalmente o ajustas tu BD.
                 ValorAnterior = $"Estatus: {valorAnterior}",
                 ValorNuevo = $"Estatus: {dto.NuevoEstatus}",
                 FechaCambio = DateTime.Now
@@ -247,14 +257,14 @@ namespace RegistroCivilAPI.Controllers
             _context.BitacoraAuditoria.Add(bitacora);
             await _context.SaveChangesAsync();
 
-            return Ok(new { mensaje = "Estatus actualizado y registrado en bitácora." });
+            return Ok(new { mensaje = $"La cita se ha marcado como {dto.NuevoEstatus} correctamente." });
         }
+    }
 
-        public class CambioEstatusDTO
-        {
-            public string NuevoEstatus { get; set; }
-            public int IdUsuarioInterno { get; set; }
-        }
+    public class CambioEstatusDTO
+    {
+        public string NuevoEstatus { get; set; }
+        public int IdUsuarioInterno { get; set; }
     }
 
     public class CitaDTO
