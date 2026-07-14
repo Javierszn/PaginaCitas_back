@@ -18,7 +18,6 @@ namespace RegistroCivilAPI.Controllers
             _context = context;
         }
 
-        // 1. OBTENER TODO EL HISTORIAL
         [HttpGet]
         public async Task<ActionResult> ObtenerBitacora()
         {
@@ -40,7 +39,6 @@ namespace RegistroCivilAPI.Controllers
             return Ok(registros);
         }
 
-        // 2. FUNCIÓN PARA DESHACER UN CAMBIO
         [HttpPost("Deshacer/{idBitacora}")]
         public async Task<ActionResult> DeshacerCambio(int idBitacora, [FromBody] int idAdmin)
         {
@@ -49,30 +47,26 @@ namespace RegistroCivilAPI.Controllers
 
             if (log.TablaAfectada == "Citas" && log.AccionRealizada == "UPDATE")
             {
-                // Buscamos la cita original
                 var cita = await _context.Citas.FirstOrDefaultAsync(c => c.IdCita == log.RegistroId);
                 if (cita == null) return BadRequest(new { mensaje = "La cita original ya no existe." });
 
-                // Extraemos el estatus viejo (Limpiamos el texto "Estatus: ")
                 string estatusAnterior = log.ValorAnterior?.Replace("Estatus: ", "").Trim();
 
                 if (string.IsNullOrEmpty(estatusAnterior))
                     return BadRequest(new { mensaje = "No se pudo leer el valor anterior para restaurarlo." });
 
                 string estatusActual = cita.Estatus;
-
-                // RESTAURAMOS LA CITA
                 cita.Estatus = estatusAnterior;
 
-                // Generamos un nuevo registro indicando que se aplicó un Rollback
+                // CORRECCIÓN AQUÍ: Usamos "UPDATE" para respetar el CONSTRAINT de tu Base de Datos
                 var nuevoLog = new BitacoraAuditorium
                 {
                     IdUsuarioInterno = idAdmin,
                     TablaAfectada = "Citas",
-                    AccionRealizada = "DESHACER (UNDO)",
+                    AccionRealizada = "UPDATE",
                     RegistroId = cita.IdCita,
                     ValorAnterior = $"Estatus: {estatusActual}",
-                    ValorNuevo = $"Estatus: {estatusAnterior}",
+                    ValorNuevo = $"Estatus: {estatusAnterior} (RESTAURADO)",
                     FechaCambio = DateTime.Now
                 };
 

@@ -198,29 +198,46 @@ namespace RegistroCivilAPI.Controllers
 
             return Ok(new { mensaje = "Su cita ha sido cancelada con éxito. El espacio ha sido liberado." });
         }
-
         [HttpGet("PorSede/{idSede}")]
-        public async Task<ActionResult> ObtenerCitasPorSede(int idSede, [FromQuery] string? fecha = null)
+        public async Task<ActionResult> ObtenerCitasPorSede(int idSede, [FromQuery] string? fecha = null, [FromQuery] string? busqueda = null)
         {
-            DateTime fechaFiltro = DateTime.Today;
-            if (!string.IsNullOrEmpty(fecha) && DateTime.TryParse(fecha, out DateTime parsedDate))
-            {
-                fechaFiltro = parsedDate.Date;
-            }
-
-            var citas = await _context.Citas
+            // Creamos la consulta base
+            var query = _context.Citas
                 .Include(c => c.IdCiudadanoNavigation)
                 .Include(c => c.IdTramiteNavigation)
-                .Where(c => c.IdSede == idSede &&
-                            c.FechaHoraInicio.Year == fechaFiltro.Year &&
-                            c.FechaHoraInicio.Month == fechaFiltro.Month &&
-                            c.FechaHoraInicio.Day == fechaFiltro.Day)
+                .Where(c => c.IdSede == idSede).AsQueryable();
+
+            // Si hay un texto de búsqueda, IGNORAMOS la fecha y buscamos en toda la base
+            if (!string.IsNullOrWhiteSpace(busqueda))
+            {
+                busqueda = busqueda.ToLower();
+                query = query.Where(c => c.IdCita.ToLower().Contains(busqueda) ||
+                                         c.IdCiudadanoNavigation.Curp.ToLower().Contains(busqueda) ||
+                                         c.IdCiudadanoNavigation.Nombre.ToLower().Contains(busqueda) ||
+                                         c.IdCiudadanoNavigation.PrimerApellido.ToLower().Contains(busqueda));
+            }
+            else
+            {
+                // Si no hay búsqueda, filtramos por la fecha seleccionada (o la de hoy)
+                DateTime fechaFiltro = DateTime.Today;
+                if (!string.IsNullOrEmpty(fecha) && DateTime.TryParse(fecha, out DateTime parsedDate))
+                {
+                    fechaFiltro = parsedDate.Date;
+                }
+
+                query = query.Where(c => c.FechaHoraInicio.Year == fechaFiltro.Year &&
+                                         c.FechaHoraInicio.Month == fechaFiltro.Month &&
+                                         c.FechaHoraInicio.Day == fechaFiltro.Day);
+            }
+
+            var citas = await query
                 .OrderBy(c => c.FechaHoraInicio)
                 .Select(c => new {
                     folio = c.IdCita,
                     ciudadano = $"{c.IdCiudadanoNavigation.Nombre} {c.IdCiudadanoNavigation.PrimerApellido} {c.IdCiudadanoNavigation.SegundoApellido}".Trim(),
                     curp = c.IdCiudadanoNavigation.Curp,
                     tramite = c.IdTramiteNavigation.NombreTramite,
+                    fechaStr = c.FechaHoraInicio.ToString("dd/MM/yyyy"), // Nueva columna para saber de qué día es si se busca globalmente
                     hora = c.FechaHoraInicio.ToString("HH:mm"),
                     estatus = c.Estatus
                 })
