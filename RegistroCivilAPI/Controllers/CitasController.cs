@@ -126,8 +126,7 @@ namespace RegistroCivilAPI.Controllers
                     await _context.SaveChangesAsync();
                 }
 
-                // --- NUEVA LÓGICA DE RESTRICCIÓN DE CITAS ---
-                // Verifica si el ciudadano ya tiene una cita activa PARA ESTE MISMO TRÁMITE
+                
                 var citaMismoTramite = await _context.Citas
                     .AnyAsync(c => c.IdCiudadano == ciudadano.IdCiudadano && c.IdTramite == solicitud.IdTramite && c.Estatus == "AGENDADA");
 
@@ -199,6 +198,62 @@ namespace RegistroCivilAPI.Controllers
             await _context.SaveChangesAsync();
 
             return Ok(new { mensaje = "Su cita ha sido cancelada con éxito. El espacio ha sido liberado." });
+        }
+
+        
+
+        [HttpGet("PorSede/{idSede}")]
+        public async Task<ActionResult> ObtenerCitasPorSede(int idSede)
+        {
+            var hoy = DateTime.Today;
+            var citas = await _context.Citas
+                .Include(c => c.IdCiudadanoNavigation)
+                .Include(c => c.IdTramiteNavigation)
+                .Where(c => c.IdSede == idSede && c.FechaHoraInicio.Date == hoy)
+                .OrderBy(c => c.FechaHoraInicio)
+                .Select(c => new {
+                    folio = c.IdCita,
+                    ciudadano = $"{c.IdCiudadanoNavigation.Nombre} {c.IdCiudadanoNavigation.PrimerApellido}",
+                    curp = c.IdCiudadanoNavigation.Curp,
+                    tramite = c.IdTramiteNavigation.NombreTramite,
+                    hora = c.FechaHoraInicio.ToString("HH:mm"),
+                    estatus = c.Estatus
+                })
+                .ToListAsync();
+
+            return Ok(citas);
+        }
+
+        [HttpPut("{folio}/actualizarEstatus")]
+        public async Task<ActionResult> ActualizarEstatus(string folio, [FromBody] CambioEstatusDTO dto)
+        {
+            var cita = await _context.Citas.FirstOrDefaultAsync(c => c.IdCita == folio);
+            if (cita == null) return NotFound("Cita no encontrada.");
+
+            string valorAnterior = cita.Estatus;
+            cita.Estatus = dto.NuevoEstatus;
+
+            var bitacora = new BitacoraAuditorium
+            {
+                IdUsuarioInterno = dto.IdUsuarioInterno,
+                TablaAfectada = "Citas",
+                AccionRealizada = "UPDATE",
+                RegistroId = 1, 
+                ValorAnterior = $"Estatus: {valorAnterior}",
+                ValorNuevo = $"Estatus: {dto.NuevoEstatus}",
+                FechaCambio = DateTime.Now
+            };
+
+            _context.BitacoraAuditoria.Add(bitacora);
+            await _context.SaveChangesAsync();
+
+            return Ok(new { mensaje = "Estatus actualizado y registrado en bitácora." });
+        }
+
+        public class CambioEstatusDTO
+        {
+            public string NuevoEstatus { get; set; }
+            public int IdUsuarioInterno { get; set; }
         }
     }
 
