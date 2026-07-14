@@ -126,7 +126,6 @@ namespace RegistroCivilAPI.Controllers
                     await _context.SaveChangesAsync();
                 }
 
-                // Verifica si el ciudadano ya tiene una cita activa PARA ESTE MISMO TRÁMITE
                 var citaMismoTramite = await _context.Citas
                     .AnyAsync(c => c.IdCiudadano == ciudadano.IdCiudadano && c.IdTramite == solicitud.IdTramite && c.Estatus == "AGENDADA");
 
@@ -200,12 +199,9 @@ namespace RegistroCivilAPI.Controllers
             return Ok(new { mensaje = "Su cita ha sido cancelada con éxito. El espacio ha sido liberado." });
         }
 
-        // --- MÉTODOS DEL PANEL DE EMPLEADOS ---
-
         [HttpGet("PorSede/{idSede}")]
         public async Task<ActionResult> ObtenerCitasPorSede(int idSede, [FromQuery] string? fecha = null)
         {
-            // Si no mandan fecha, usamos la de hoy. Si mandan, la convertimos.
             DateTime fechaFiltro = DateTime.Today;
             if (!string.IsNullOrEmpty(fecha) && DateTime.TryParse(fecha, out DateTime parsedDate))
             {
@@ -242,13 +238,12 @@ namespace RegistroCivilAPI.Controllers
             string valorAnterior = cita.Estatus;
             cita.Estatus = dto.NuevoEstatus;
 
-            // Registrar en Bitácora
             var bitacora = new BitacoraAuditorium
             {
                 IdUsuarioInterno = dto.IdUsuarioInterno,
                 TablaAfectada = "Citas",
                 AccionRealizada = "UPDATE",
-                RegistroId = 1, // Nota: La tabla pide int, aquí usamos 1 temporalmente o ajustas tu BD.
+                RegistroId = folio, // AHORA SÍ GUARDAMOS EL FOLIO REAL
                 ValorAnterior = $"Estatus: {valorAnterior}",
                 ValorNuevo = $"Estatus: {dto.NuevoEstatus}",
                 FechaCambio = DateTime.Now
