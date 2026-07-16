@@ -18,11 +18,43 @@ namespace RegistroCivilAPI.Controllers
             _context = context;
         }
 
+        // 1. OBTENER EL HISTORIAL CON FILTROS INTELIGENTES
         [HttpGet]
-        public async Task<ActionResult> ObtenerBitacora()
+        public async Task<ActionResult> ObtenerBitacora([FromQuery] string? fecha = null, [FromQuery] string? busqueda = null)
         {
-            var registros = await _context.BitacoraAuditoria
+            var query = _context.BitacoraAuditoria
                 .Include(b => b.IdUsuarioInternoNavigation)
+                .AsQueryable();
+
+            // Si hay un texto de búsqueda, IGNORAMOS la fecha y buscamos en toda la bitácora
+            if (!string.IsNullOrWhiteSpace(busqueda))
+            {
+                // Guardamos el texto en minúsculas para los campos normales
+                busqueda = busqueda.ToLower();
+
+                query = query.Where(b => b.IdUsuarioInternoNavigation.NombreCompleto.ToLower().Contains(busqueda) ||
+                                         b.TablaAfectada.ToLower().Contains(busqueda) ||
+                                         b.AccionRealizada.ToLower().Contains(busqueda) ||
+                                         b.RegistroId.ToLower().Contains(busqueda) ||
+                                         // CORRECCIÓN AQUÍ: Quitamos el .ToLower() de ValorAnterior y ValorNuevo
+                                         // SQL Server ignorará mayúsculas/minúsculas automáticamente.
+                                         (b.ValorAnterior != null && b.ValorAnterior.Contains(busqueda)) ||
+                                         (b.ValorNuevo != null && b.ValorNuevo.Contains(busqueda)));
+            }
+            else
+            {
+                // Si no hay búsqueda de texto, pero sí hay fecha, filtramos por la fecha exacta
+                if (!string.IsNullOrEmpty(fecha) && DateTime.TryParse(fecha, out DateTime parsedDate))
+                {
+                    var fechaFiltro = parsedDate.Date;
+                    query = query.Where(b => b.FechaCambio.HasValue &&
+                                             b.FechaCambio.Value.Year == fechaFiltro.Year &&
+                                             b.FechaCambio.Value.Month == fechaFiltro.Month &&
+                                             b.FechaCambio.Value.Day == fechaFiltro.Day);
+                }
+            }
+
+            var registros = await query
                 .OrderByDescending(b => b.FechaCambio)
                 .Select(b => new {
                     idBitacora = b.IdBitacora,
@@ -39,6 +71,7 @@ namespace RegistroCivilAPI.Controllers
             return Ok(registros);
         }
 
+        // 2. FUNCIÓN PARA DESHACER UN CAMBIO
         [HttpPost("Deshacer/{idBitacora}")]
         public async Task<ActionResult> DeshacerCambio(int idBitacora, [FromBody] int idAdmin)
         {
@@ -58,7 +91,6 @@ namespace RegistroCivilAPI.Controllers
                 string estatusActual = cita.Estatus;
                 cita.Estatus = estatusAnterior;
 
-                // CORRECCIÓN AQUÍ: Usamos "UPDATE" para respetar el CONSTRAINT de tu Base de Datos
                 var nuevoLog = new BitacoraAuditorium
                 {
                     IdUsuarioInterno = idAdmin,
