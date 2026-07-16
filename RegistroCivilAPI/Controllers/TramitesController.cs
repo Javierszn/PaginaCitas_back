@@ -1,6 +1,8 @@
 ﻿using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using RegistroCivilAPI.Models;
+using System.Linq;
+using System.Threading.Tasks;
 
 namespace RegistroCivilAPI.Controllers
 {
@@ -9,32 +11,66 @@ namespace RegistroCivilAPI.Controllers
     public class TramitesController : ControllerBase
     {
         private readonly RegistroCivilCitasContext _context;
-        public TramitesController(RegistroCivilCitasContext context) { _context = context; }
 
+        public TramitesController(RegistroCivilCitasContext context)
+        {
+            _context = context;
+        }
+
+        // 1. RUTA PARA CIUDADANOS (Solo muestra trámites activos)
         [HttpGet]
-        public async Task<ActionResult> GetTramitesAgrupados()
+        public async Task<ActionResult> GetTramitesActivos()
         {
             var categorias = await _context.CategoriasTramites
-                .Include(c => c.Tramites)
                 .Where(c => c.Activa == true)
-                .Select(c => new
-                {
-                    idCategoria = c.IdCategoria,
-                    nombreCategoria = c.NombreCategoria,
-                    descripcion = c.Descripcion,
-                    tramites = c.Tramites.Where(t => t.Activo == true).Select(t => new
-                    {
-                        idTramite = t.IdTramite,
-                        nombreTramite = t.NombreTramite,
-                        descripcion = t.Descripcion,
-                        requisitos = t.Requisitos,
-                        costo = t.Costo,
-                        duracionMinutos = t.DuracionMinutos
-                    }).ToList()
-                })
-                .ToListAsync();
+                .Select(c => new {
+                    c.IdCategoria,
+                    c.NombreCategoria,
+                    c.Descripcion,
+                    Tramites = _context.Tramites.Where(t => t.IdCategoria == c.IdCategoria && t.Activo == true).ToList()
+                }).ToListAsync();
+
+            // Filtramos para no mostrar categorías vacías
+            return Ok(categorias.Where(c => c.Tramites.Any()));
+        }
+
+        // 2. RUTA PARA SUPER ADMIN (Muestra ABSOLUTAMENTE TODOS para poder editarlos)
+        [HttpGet("Admin")]
+        public async Task<ActionResult> GetTramitesAdmin()
+        {
+            var categorias = await _context.CategoriasTramites
+                .Select(c => new {
+                    c.IdCategoria,
+                    c.NombreCategoria,
+                    c.Descripcion,
+                    Tramites = _context.Tramites.Where(t => t.IdCategoria == c.IdCategoria).ToList()
+                }).ToListAsync();
 
             return Ok(categorias);
         }
+
+        // 3. ACTUALIZAR TRÁMITE (Incluyendo Límite Diario)
+        [HttpPut("{id}")]
+        public async Task<ActionResult> UpdateTramite(int id, [FromBody] TramiteUpdateDTO dto)
+        {
+            var t = await _context.Tramites.FindAsync(id);
+            if (t == null) return NotFound(new { mensaje = "Trámite no encontrado." });
+
+            t.DuracionMinutos = dto.DuracionMinutos;
+            t.Costo = dto.Costo;
+            t.Activo = dto.Activo;
+            t.LimiteDiarioSede = dto.LimiteDiario;
+
+            await _context.SaveChangesAsync();
+            return Ok(new { mensaje = "Trámite actualizado correctamente. Reglas aplicadas." });
+        }
+    }
+
+    public class TramiteUpdateDTO
+    {
+        public int DuracionMinutos { get; set; }
+        public decimal Costo { get; set; }
+        public bool Activo { get; set; }
+        public int LimiteDiario { get; set; }
     }
 }

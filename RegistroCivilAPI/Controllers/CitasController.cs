@@ -20,48 +20,59 @@ namespace RegistroCivilAPI.Controllers
         }
 
         [HttpGet("Horarios")]
-        public async Task<ActionResult<IEnumerable<string>>> ObtenerHorariosDisponibles(int idSede, DateTime fecha)
+        public async Task<ActionResult<IEnumerable<string>>> ObtenerHorariosDisponibles(int idSede, int idTramite, DateTime fecha)
         {
             if (fecha.Date < DateTime.Today) return Ok(new List<string>());
 
-            DateOnly fechaConsulta = DateOnly.FromDateTime(fecha);
-            var inhabil = await _context.DiasInhabiles
-                .AnyAsync(d => d.FechaBloqueada == fechaConsulta && (d.IdSede == idSede || d.IdSede == null));
+            var inhabil = await _context.DiasInhabiles.AnyAsync(d => d.FechaBloqueada == DateOnly.FromDateTime(fecha) && (d.IdSede == idSede || d.IdSede == null));
             if (inhabil) return Ok(new List<string>());
 
             byte diaSemana = (byte)(fecha.DayOfWeek == DayOfWeek.Sunday ? 7 : (int)fecha.DayOfWeek);
-            var horarioSede = await _context.HorariosSedes
-                .FirstOrDefaultAsync(h => h.IdSede == idSede && h.DiaSemana == diaSemana);
-
+            var horarioSede = await _context.HorariosSedes.FirstOrDefaultAsync(h => h.IdSede == idSede && h.DiaSemana == diaSemana);
             if (horarioSede == null) return Ok(new List<string>());
 
-            var citasOcupadas = await _context.Citas
+            // Obtener el Trámite para leer la duración y el Límite Diario
+            var tramite = await _context.Tramites.FindAsync(idTramite);
+            if (tramite == null) return BadRequest("Trámite no encontrado");
+
+            int intervalo = tramite.DuracionMinutos > 0 ? tramite.DuracionMinutos : 30;
+            int limiteDiario = tramite.LimiteDiarioSede > 0 ? tramite.LimiteDiarioSede : 999;
+
+            // 1. REGLA DE LÍMITE DIARIO: Contamos cuántas citas existen para este trámite, en este día y en esta sede.
+            var cantidadCitasDia = await _context.Citas
+                .CountAsync(c => c.IdSede == idSede && c.IdTramite == idTramite && c.FechaHoraInicio.Date == fecha.Date && c.Estatus == "AGENDADA");
+
+            if (cantidadCitasDia >= limiteDiario)
+            {
+                // Si llegamos al límite, devolvemos una lista vacía para que el frontend bloquee el día
+                return Ok(new List<string>());
+            }
+
+            // 2. REGLA DE HORARIOS: Calculamos qué horas ya están tomadas
+            var horasOcupadas = await _context.Citas
                 .Where(c => c.IdSede == idSede && c.FechaHoraInicio.Date == fecha.Date && c.Estatus == "AGENDADA")
-                .Select(c => c.FechaHoraInicio)
-                .ToListAsync();
+                .Select(c => TimeOnly.FromDateTime(c.FechaHoraInicio)).ToListAsync();
 
-            var horasOcupadas = citasOcupadas.Select(c => TimeOnly.FromDateTime(c)).ToList();
             var horasDisponibles = new List<string>();
-
             TimeOnly horaActual = horarioSede.HoraApertura;
-            TimeOnly horaCierre = horarioSede.HoraCierre;
             TimeOnly now = TimeOnly.FromDateTime(DateTime.Now);
 
-            while (horaActual < horaCierre)
+            while (horaActual < horarioSede.HoraCierre)
             {
+                // Si es hoy, no permitir agendar horas que ya pasaron
                 if (fecha.Date == DateTime.Today && horaActual <= now)
                 {
-                    horaActual = horaActual.AddMinutes(30);
-                    continue;
+                    horaActual = horaActual.AddMinutes(intervalo); continue;
                 }
 
                 if (!horasOcupadas.Contains(horaActual))
                 {
                     horasDisponibles.Add(horaActual.ToString("HH:mm"));
                 }
-                horaActual = horaActual.AddMinutes(30);
-            }
 
+                // Saltar el tiempo configurado (Ej: 15, 30, 45 mins)
+                horaActual = horaActual.AddMinutes(intervalo);
+            }
             return Ok(horasDisponibles);
         }
 
