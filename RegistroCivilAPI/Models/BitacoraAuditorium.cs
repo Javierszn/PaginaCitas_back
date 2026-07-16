@@ -10,7 +10,7 @@ public partial class BitacoraAuditorium
     public string TablaAfectada { get; set; } = null!;
     public string AccionRealizada { get; set; } = null!;
 
-    // --- CORRECCIÓN: AHORA ES STRING PARA SOPORTAR LOS FOLIOS DE LAS CITAS ---
+
     public string RegistroId { get; set; } = null!;
 
     public string? ValorAnterior { get; set; }

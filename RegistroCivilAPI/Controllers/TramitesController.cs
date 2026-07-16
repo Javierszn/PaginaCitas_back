@@ -17,7 +17,7 @@ namespace RegistroCivilAPI.Controllers
             _context = context;
         }
 
-        // 1. RUTA PARA CIUDADANOS (Solo muestra trámites activos)
+        
         [HttpGet]
         public async Task<ActionResult> GetTramitesActivos()
         {
@@ -30,11 +30,11 @@ namespace RegistroCivilAPI.Controllers
                     Tramites = _context.Tramites.Where(t => t.IdCategoria == c.IdCategoria && t.Activo == true).ToList()
                 }).ToListAsync();
 
-            // Filtramos para no mostrar categorías vacías
+            
             return Ok(categorias.Where(c => c.Tramites.Any()));
         }
 
-        // 2. RUTA PARA SUPER ADMIN (Muestra ABSOLUTAMENTE TODOS para poder editarlos)
+        
         [HttpGet("Admin")]
         public async Task<ActionResult> GetTramitesAdmin()
         {
@@ -49,7 +49,6 @@ namespace RegistroCivilAPI.Controllers
             return Ok(categorias);
         }
 
-        // 3. ACTUALIZAR TRÁMITE (Incluyendo Límite Diario)
         [HttpPut("{id}")]
         public async Task<ActionResult> UpdateTramite(int id, [FromBody] TramiteUpdateDTO dto)
         {

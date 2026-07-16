@@ -31,24 +31,24 @@ namespace RegistroCivilAPI.Controllers
             var horarioSede = await _context.HorariosSedes.FirstOrDefaultAsync(h => h.IdSede == idSede && h.DiaSemana == diaSemana);
             if (horarioSede == null) return Ok(new List<string>());
 
-            // Obtener el Trámite para leer la duración y el Límite Diario
+         
             var tramite = await _context.Tramites.FindAsync(idTramite);
             if (tramite == null) return BadRequest("Trámite no encontrado");
 
             int intervalo = tramite.DuracionMinutos > 0 ? tramite.DuracionMinutos : 30;
             int limiteDiario = tramite.LimiteDiarioSede > 0 ? tramite.LimiteDiarioSede : 999;
 
-            // 1. REGLA DE LÍMITE DIARIO: Contamos cuántas citas existen para este trámite, en este día y en esta sede.
+            
             var cantidadCitasDia = await _context.Citas
                 .CountAsync(c => c.IdSede == idSede && c.IdTramite == idTramite && c.FechaHoraInicio.Date == fecha.Date && c.Estatus == "AGENDADA");
 
             if (cantidadCitasDia >= limiteDiario)
             {
-                // Si llegamos al límite, devolvemos una lista vacía para que el frontend bloquee el día
+                
                 return Ok(new List<string>());
             }
 
-            // 2. REGLA DE HORARIOS: Calculamos qué horas ya están tomadas
+            
             var horasOcupadas = await _context.Citas
                 .Where(c => c.IdSede == idSede && c.FechaHoraInicio.Date == fecha.Date && c.Estatus == "AGENDADA")
                 .Select(c => TimeOnly.FromDateTime(c.FechaHoraInicio)).ToListAsync();
@@ -59,7 +59,7 @@ namespace RegistroCivilAPI.Controllers
 
             while (horaActual < horarioSede.HoraCierre)
             {
-                // Si es hoy, no permitir agendar horas que ya pasaron
+               
                 if (fecha.Date == DateTime.Today && horaActual <= now)
                 {
                     horaActual = horaActual.AddMinutes(intervalo); continue;
@@ -70,7 +70,7 @@ namespace RegistroCivilAPI.Controllers
                     horasDisponibles.Add(horaActual.ToString("HH:mm"));
                 }
 
-                // Saltar el tiempo configurado (Ej: 15, 30, 45 mins)
+               
                 horaActual = horaActual.AddMinutes(intervalo);
             }
             return Ok(horasDisponibles);
@@ -212,13 +212,13 @@ namespace RegistroCivilAPI.Controllers
         [HttpGet("PorSede/{idSede}")]
         public async Task<ActionResult> ObtenerCitasPorSede(int idSede, [FromQuery] string? fecha = null, [FromQuery] string? busqueda = null)
         {
-            // Creamos la consulta base
+            
             var query = _context.Citas
                 .Include(c => c.IdCiudadanoNavigation)
                 .Include(c => c.IdTramiteNavigation)
                 .Where(c => c.IdSede == idSede).AsQueryable();
 
-            // Si hay un texto de búsqueda, IGNORAMOS la fecha y buscamos en toda la base
+           
             if (!string.IsNullOrWhiteSpace(busqueda))
             {
                 busqueda = busqueda.ToLower();
@@ -229,7 +229,7 @@ namespace RegistroCivilAPI.Controllers
             }
             else
             {
-                // Si no hay búsqueda, filtramos por la fecha seleccionada (o la de hoy)
+                
                 DateTime fechaFiltro = DateTime.Today;
                 if (!string.IsNullOrEmpty(fecha) && DateTime.TryParse(fecha, out DateTime parsedDate))
                 {
@@ -248,7 +248,7 @@ namespace RegistroCivilAPI.Controllers
                     ciudadano = $"{c.IdCiudadanoNavigation.Nombre} {c.IdCiudadanoNavigation.PrimerApellido} {c.IdCiudadanoNavigation.SegundoApellido}".Trim(),
                     curp = c.IdCiudadanoNavigation.Curp,
                     tramite = c.IdTramiteNavigation.NombreTramite,
-                    fechaStr = c.FechaHoraInicio.ToString("dd/MM/yyyy"), // Nueva columna para saber de qué día es si se busca globalmente
+                    fechaStr = c.FechaHoraInicio.ToString("dd/MM/yyyy"), 
                     hora = c.FechaHoraInicio.ToString("HH:mm"),
                     estatus = c.Estatus
                 })
@@ -271,7 +271,7 @@ namespace RegistroCivilAPI.Controllers
                 IdUsuarioInterno = dto.IdUsuarioInterno,
                 TablaAfectada = "Citas",
                 AccionRealizada = "UPDATE",
-                RegistroId = folio, // AHORA SÍ GUARDAMOS EL FOLIO REAL
+                RegistroId = folio, 
                 ValorAnterior = $"Estatus: {valorAnterior}",
                 ValorNuevo = $"Estatus: {dto.NuevoEstatus}",
                 FechaCambio = DateTime.Now

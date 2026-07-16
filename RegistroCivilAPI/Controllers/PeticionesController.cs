@@ -47,11 +47,10 @@ namespace RegistroCivilAPI.Controllers
             return Ok(peticiones);
         }
 
-        // Crear una nueva petición (Desde Login o Dashboard)
         [HttpPost]
         public async Task<ActionResult> CreatePeticion([FromBody] NuevaPeticionDTO dto)
         {
-            // Usamos parámetros {0} para evitar Inyección SQL
+           
             await _context.Database.ExecuteSqlRawAsync(
                 "INSERT INTO Peticiones_Soporte (username_solicitante, tipo_peticion, descripcion) VALUES ({0}, {1}, {2})",
                 dto.Username, dto.Tipo, dto.Descripcion);
@@ -59,7 +58,7 @@ namespace RegistroCivilAPI.Controllers
             return Ok(new { mensaje = "Tu solicitud ha sido enviada al departamento de Sistemas. Pronto será atendida." });
         }
 
-        // Marcar como resuelta (Super Admin)
+    
         [HttpPut("{id}/resolver")]
         public async Task<ActionResult> ResolverPeticion(int id)
         {
