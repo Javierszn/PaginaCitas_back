@@ -40,7 +40,7 @@ namespace RegistroCivilAPI.Controllers
 
             
             var cantidadCitasDia = await _context.Citas
-                .CountAsync(c => c.IdSede == idSede && c.IdTramite == idTramite && c.FechaHoraInicio.Date == fecha.Date && c.Estatus == "AGENDADA");
+                .CountAsync(c => c.IdSede == idSede && c.IdTramite == idTramite && c.FechaHoraInicio.Date == fecha.Date && c.Estatus == "PROGRAMADA");
 
             if (cantidadCitasDia >= limiteDiario)
             {
@@ -50,7 +50,7 @@ namespace RegistroCivilAPI.Controllers
 
             
             var horasOcupadas = await _context.Citas
-                .Where(c => c.IdSede == idSede && c.FechaHoraInicio.Date == fecha.Date && c.Estatus == "AGENDADA")
+                .Where(c => c.IdSede == idSede && c.FechaHoraInicio.Date == fecha.Date && c.Estatus == "PROGRAMADA")
                 .Select(c => TimeOnly.FromDateTime(c.FechaHoraInicio)).ToListAsync();
 
             var horasDisponibles = new List<string>();
@@ -138,11 +138,11 @@ namespace RegistroCivilAPI.Controllers
                 }
 
                 var citaMismoTramite = await _context.Citas
-                    .AnyAsync(c => c.IdCiudadano == ciudadano.IdCiudadano && c.IdTramite == solicitud.IdTramite && c.Estatus == "AGENDADA");
+                    .AnyAsync(c => c.IdCiudadano == ciudadano.IdCiudadano && c.IdTramite == solicitud.IdTramite && c.Estatus == "PROGRAMADA");
 
                 if (citaMismoTramite)
                 {
-                    return BadRequest(new { mensaje = "Alerta: Usted ya tiene una cita agendada para este trámite específico. Por favor, seleccione otro servicio." });
+                    return BadRequest(new { mensaje = "Alerta: Usted ya tiene una cita programada para este trámite específico. Por favor, seleccione otro servicio." });
                 }
 
                 var nuevaCita = new Cita
@@ -153,7 +153,7 @@ namespace RegistroCivilAPI.Controllers
                     IdSede = solicitud.IdSede,
                     FechaHoraInicio = solicitud.FechaHora,
                     FechaHoraFin = solicitud.FechaHora.AddMinutes(30),
-                    Estatus = "AGENDADA"
+                    Estatus = "PROGRAMADA"
                 };
 
                 _context.Citas.Add(nuevaCita);

@@ -16,14 +16,7 @@ namespace RegistroCivilAPI.Controllers
         {
             var users = await _context.UsuariosInternos
                 .Include(u => u.IdRolNavigation)
-                .Select(u => new {
-                    u.IdUsuario,
-                    u.Username,
-                    u.NombreCompleto,
-                    u.IdRol,
-                    Rol = u.IdRolNavigation.NombreRol,
-                    u.Activo
-                }).ToListAsync();
+                .Select(u => new { u.IdUsuario, u.Username, u.NombreCompleto, u.IdRol, Rol = u.IdRolNavigation.NombreRol, u.Activo }).ToListAsync();
             return Ok(users);
         }
 
@@ -40,11 +33,12 @@ namespace RegistroCivilAPI.Controllers
                 NombreCompleto = dto.NombreCompleto,
                 IdRol = dto.IdRol,
                 IdSede = 1,
-                Activo = true
+                Activo = true,
+                RequiereCambioPassword = true 
             };
             _context.UsuariosInternos.Add(n);
             await _context.SaveChangesAsync();
-            return Ok(new { mensaje = "Usuario creado exitosamente." });
+            return Ok(new { mensaje = "Usuario creado. Se le pedirá cambiar la contraseña en su primer inicio de sesión." });
         }
 
         [HttpPut("{id}/estado")]
@@ -52,9 +46,7 @@ namespace RegistroCivilAPI.Controllers
         {
             var u = await _context.UsuariosInternos.FindAsync(id);
             if (u == null) return NotFound();
-            u.Activo = !u.Activo;
-            await _context.SaveChangesAsync();
-            return Ok(new { mensaje = "Estado de usuario actualizado." });
+            u.Activo = !u.Activo; await _context.SaveChangesAsync(); return Ok(new { mensaje = "Estado de usuario actualizado." });
         }
 
         [HttpPut("{id}/password")]
@@ -63,11 +55,11 @@ namespace RegistroCivilAPI.Controllers
             var u = await _context.UsuariosInternos.FindAsync(id);
             if (u == null) return NotFound();
             u.PasswordHash = dto.Password;
+            u.RequiereCambioPassword = false; 
             await _context.SaveChangesAsync();
             return Ok(new { mensaje = "Contraseña actualizada exitosamente." });
         }
     }
-
     public class NuevoUsuarioDTO { public string Username { get; set; } public string Password { get; set; } public string NombreCompleto { get; set; } public int IdRol { get; set; } }
     public class PasswordDTO { public string Password { get; set; } }
 }

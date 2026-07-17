@@ -18,14 +18,14 @@ namespace RegistroCivilAPI.Controllers
             _context = context;
         }
 
-        // Obtener peticiones para el Super Admin
+        
         [HttpGet]
         public async Task<ActionResult> GetPeticiones()
         {
             var peticiones = new List<object>();
             using (var command = _context.Database.GetDbConnection().CreateCommand())
             {
-                command.CommandText = "SELECT id_peticion, username_solicitante, tipo_peticion, descripcion, estatus, fecha_solicitud FROM Peticiones_Soporte ORDER BY fecha_solicitud DESC";
+                command.CommandText = "SELECT id_peticion, username_solicitante, tipo_peticion, descripcion, estatus, fecha_solicitud, respuesta FROM Peticiones_Soporte ORDER BY fecha_solicitud DESC";
                 await _context.Database.OpenConnectionAsync();
 
                 using (var result = await command.ExecuteReaderAsync())
@@ -39,7 +39,37 @@ namespace RegistroCivilAPI.Controllers
                             tipo = result.GetString(2),
                             descripcion = result.GetString(3),
                             estatus = result.GetString(4),
-                            fecha = result.GetDateTime(5)
+                            fecha = result.GetDateTime(5),
+                            respuesta = result.IsDBNull(6) ? "" : result.GetString(6)
+                        });
+                    }
+                }
+            }
+            return Ok(peticiones);
+        }
+
+
+        [HttpGet("MisPeticiones/{username}")]
+        public async Task<ActionResult> GetMisPeticiones(string username)
+        {
+            var peticiones = new List<object>();
+            using (var command = _context.Database.GetDbConnection().CreateCommand())
+            {
+                command.CommandText = $"SELECT id_peticion, tipo_peticion, descripcion, estatus, fecha_solicitud, respuesta FROM Peticiones_Soporte WHERE username_solicitante = '{username}' ORDER BY fecha_solicitud DESC";
+                await _context.Database.OpenConnectionAsync();
+
+                using (var result = await command.ExecuteReaderAsync())
+                {
+                    while (await result.ReadAsync())
+                    {
+                        peticiones.Add(new
+                        {
+                            idPeticion = result.GetInt32(0),
+                            tipo = result.GetString(1),
+                            descripcion = result.GetString(2),
+                            estatus = result.GetString(3),
+                            fecha = result.GetDateTime(4),
+                            respuesta = result.IsDBNull(5) ? "" : result.GetString(5)
                         });
                     }
                 }
@@ -50,7 +80,6 @@ namespace RegistroCivilAPI.Controllers
         [HttpPost]
         public async Task<ActionResult> CreatePeticion([FromBody] NuevaPeticionDTO dto)
         {
-           
             await _context.Database.ExecuteSqlRawAsync(
                 "INSERT INTO Peticiones_Soporte (username_solicitante, tipo_peticion, descripcion) VALUES ({0}, {1}, {2})",
                 dto.Username, dto.Tipo, dto.Descripcion);
@@ -58,19 +87,17 @@ namespace RegistroCivilAPI.Controllers
             return Ok(new { mensaje = "Tu solicitud ha sido enviada al departamento de Sistemas. Pronto será atendida." });
         }
 
-    
+       
         [HttpPut("{id}/resolver")]
-        public async Task<ActionResult> ResolverPeticion(int id)
+        public async Task<ActionResult> ResolverPeticion(int id, [FromBody] RespuestaDTO dto)
         {
-            await _context.Database.ExecuteSqlRawAsync("UPDATE Peticiones_Soporte SET estatus = 'RESUELTA' WHERE id_peticion = {0}", id);
-            return Ok(new { mensaje = "Petición marcada como resuelta." });
+            await _context.Database.ExecuteSqlRawAsync(
+                "UPDATE Peticiones_Soporte SET estatus = 'RESUELTA', respuesta = {0} WHERE id_peticion = {1}",
+                dto.Respuesta, id);
+            return Ok(new { mensaje = "Petición marcada como resuelta y mensaje enviado al usuario." });
         }
     }
 
-    public class NuevaPeticionDTO
-    {
-        public string Username { get; set; }
-        public string Tipo { get; set; }
-        public string Descripcion { get; set; }
-    }
+    public class NuevaPeticionDTO { public string Username { get; set; } public string Tipo { get; set; } public string Descripcion { get; set; } }
+    public class RespuestaDTO { public string Respuesta { get; set; } }
 }

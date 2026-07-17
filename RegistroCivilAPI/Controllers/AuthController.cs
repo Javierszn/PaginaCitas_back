@@ -1,6 +1,7 @@
 ﻿using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using RegistroCivilAPI.Models;
+using System.Threading.Tasks;
 
 namespace RegistroCivilAPI.Controllers
 {
@@ -9,49 +10,30 @@ namespace RegistroCivilAPI.Controllers
     public class AuthController : ControllerBase
     {
         private readonly RegistroCivilCitasContext _context;
-
-        public AuthController(RegistroCivilCitasContext context)
-        {
-            _context = context;
-        }
+        public AuthController(RegistroCivilCitasContext context) { _context = context; }
 
         [HttpPost("login")]
-        public async Task<ActionResult> Login([FromBody] LoginDTO credenciales)
+        public async Task<ActionResult> Login([FromBody] LoginDTO dto)
         {
-            
-            var usuario = await _context.UsuariosInternos
+            var user = await _context.UsuariosInternos
                 .Include(u => u.IdRolNavigation)
                 .Include(u => u.IdSedeNavigation)
-                .FirstOrDefaultAsync(u => u.Username == credenciales.Username && u.Activo == true);
+                .FirstOrDefaultAsync(u => u.Username == dto.Username && u.PasswordHash == dto.Password);
 
-           
-            if (usuario == null)
-            {
-                return Unauthorized(new { mensaje = "Usuario no encontrado o cuenta inactiva." });
-            }
+            if (user == null) return Unauthorized(new { mensaje = "Usuario o contraseña incorrectos." });
+            if (user.Activo == false) return Unauthorized(new { mensaje = "Usuario bloqueado. Contacte a soporte." });
 
-        
-            if (usuario.PasswordHash != credenciales.Password)
-            {
-                return Unauthorized(new { mensaje = "Contraseña incorrecta." });
-            }
-
-            
             return Ok(new
             {
-                idUsuario = usuario.IdUsuario,
-                nombre = usuario.NombreCompleto,
-                rol = usuario.IdRolNavigation.NombreRol,
-                idSede = usuario.IdSede,
-                sede = usuario.IdSedeNavigation.Nombre
+                idUsuario = user.IdUsuario,
+                username = user.Username,
+                nombreCompleto = user.NombreCompleto,
+                rol = user.IdRolNavigation.NombreRol,
+                idSede = user.IdSede,
+                sede = user.IdSedeNavigation.Nombre,
+                requiereCambioPassword = user.RequiereCambioPassword ?? true
             });
         }
     }
-
-  
-    public class LoginDTO
-    {
-        public string Username { get; set; }
-        public string Password { get; set; }
-    }
+    public class LoginDTO { public string Username { get; set; } public string Password { get; set; } }
 }
