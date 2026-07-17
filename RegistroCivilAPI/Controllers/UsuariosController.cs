@@ -59,6 +59,30 @@ namespace RegistroCivilAPI.Controllers
             await _context.SaveChangesAsync();
             return Ok(new { mensaje = "Contraseña actualizada exitosamente." });
         }
+        [HttpGet("Accesos")]
+        public async Task<ActionResult> GetAccesos()
+        {
+            var accesos = new List<object>();
+            using (var cmd = _context.Database.GetDbConnection().CreateCommand())
+            {
+                cmd.CommandText = "SELECT id_acceso, username, fecha_login, fecha_logout FROM Registro_Accesos ORDER BY fecha_login DESC";
+                await _context.Database.OpenConnectionAsync();
+                using (var reader = await cmd.ExecuteReaderAsync())
+                {
+                    while (await reader.ReadAsync())
+                    {
+                        accesos.Add(new
+                        {
+                            idAcceso = reader.GetInt32(0),
+                            username = reader.GetString(1),
+                            fechaLogin = reader.GetDateTime(2),
+                            fechaLogout = reader.IsDBNull(3) ? (DateTime?)null : reader.GetDateTime(3)
+                        });
+                    }
+                }
+            }
+            return Ok(accesos);
+        }
     }
     public class NuevoUsuarioDTO { public string Username { get; set; } public string Password { get; set; } public string NombreCompleto { get; set; } public int IdRol { get; set; } }
     public class PasswordDTO { public string Password { get; set; } }

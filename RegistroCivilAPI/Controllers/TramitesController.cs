@@ -30,11 +30,10 @@ namespace RegistroCivilAPI.Controllers
                     Tramites = _context.Tramites.Where(t => t.IdCategoria == c.IdCategoria && t.Activo == true).ToList()
                 }).ToListAsync();
 
-            
             return Ok(categorias.Where(c => c.Tramites.Any()));
         }
 
-        
+    
         [HttpGet("Admin")]
         public async Task<ActionResult> GetTramitesAdmin()
         {
@@ -43,29 +42,40 @@ namespace RegistroCivilAPI.Controllers
                     c.IdCategoria,
                     c.NombreCategoria,
                     c.Descripcion,
+                    c.Activa,
                     Tramites = _context.Tramites.Where(t => t.IdCategoria == c.IdCategoria).ToList()
                 }).ToListAsync();
 
             return Ok(categorias);
         }
 
-        [HttpPut("{id}")]
-        public async Task<ActionResult> UpdateTramite(int id, [FromBody] TramiteUpdateDTO dto)
+     
+        [HttpPut("Categoria/{idCategoria}")]
+        public async Task<ActionResult> UpdateCategoria(int idCategoria, [FromBody] CategoriaUpdateDTO dto)
         {
-            var t = await _context.Tramites.FindAsync(id);
-            if (t == null) return NotFound(new { mensaje = "Trámite no encontrado." });
+            var categoria = await _context.CategoriasTramites.FindAsync(idCategoria);
+            if (categoria == null) return NotFound(new { mensaje = "Categoría no encontrada." });
 
-            t.DuracionMinutos = dto.DuracionMinutos;
-            t.Costo = dto.Costo;
-            t.Activo = dto.Activo;
-            t.LimiteDiarioSede = dto.LimiteDiario;
+       
+            categoria.Activa = dto.Activo;
+
+            var tramites = await _context.Tramites.Where(t => t.IdCategoria == idCategoria).ToListAsync();
+
+           
+            foreach (var t in tramites)
+            {
+                t.DuracionMinutos = dto.DuracionMinutos;
+                t.Costo = dto.Costo;
+                t.Activo = dto.Activo;
+                t.LimiteDiarioSede = dto.LimiteDiario;
+            }
 
             await _context.SaveChangesAsync();
-            return Ok(new { mensaje = "Trámite actualizado correctamente. Reglas aplicadas." });
+            return Ok(new { mensaje = "Configuración aplicada exitosamente a todos los servicios de esta categoría." });
         }
     }
 
-    public class TramiteUpdateDTO
+    public class CategoriaUpdateDTO
     {
         public int DuracionMinutos { get; set; }
         public decimal Costo { get; set; }

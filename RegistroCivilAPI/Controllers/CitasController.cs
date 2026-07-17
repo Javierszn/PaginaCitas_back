@@ -31,24 +31,20 @@ namespace RegistroCivilAPI.Controllers
             var horarioSede = await _context.HorariosSedes.FirstOrDefaultAsync(h => h.IdSede == idSede && h.DiaSemana == diaSemana);
             if (horarioSede == null) return Ok(new List<string>());
 
-         
             var tramite = await _context.Tramites.FindAsync(idTramite);
             if (tramite == null) return BadRequest("Trámite no encontrado");
 
             int intervalo = tramite.DuracionMinutos > 0 ? tramite.DuracionMinutos : 30;
             int limiteDiario = tramite.LimiteDiarioSede > 0 ? tramite.LimiteDiarioSede : 999;
 
-            
             var cantidadCitasDia = await _context.Citas
                 .CountAsync(c => c.IdSede == idSede && c.IdTramite == idTramite && c.FechaHoraInicio.Date == fecha.Date && c.Estatus == "PROGRAMADA");
 
             if (cantidadCitasDia >= limiteDiario)
             {
-                
                 return Ok(new List<string>());
             }
 
-            
             var horasOcupadas = await _context.Citas
                 .Where(c => c.IdSede == idSede && c.FechaHoraInicio.Date == fecha.Date && c.Estatus == "PROGRAMADA")
                 .Select(c => TimeOnly.FromDateTime(c.FechaHoraInicio)).ToListAsync();
@@ -59,7 +55,6 @@ namespace RegistroCivilAPI.Controllers
 
             while (horaActual < horarioSede.HoraCierre)
             {
-               
                 if (fecha.Date == DateTime.Today && horaActual <= now)
                 {
                     horaActual = horaActual.AddMinutes(intervalo); continue;
@@ -70,7 +65,6 @@ namespace RegistroCivilAPI.Controllers
                     horasDisponibles.Add(horaActual.ToString("HH:mm"));
                 }
 
-               
                 horaActual = horaActual.AddMinutes(intervalo);
             }
             return Ok(horasDisponibles);
@@ -145,21 +139,16 @@ namespace RegistroCivilAPI.Controllers
                     return BadRequest(new { mensaje = "Alerta: Usted ya tiene una cita programada para este trámite específico. Por favor, seleccione otro servicio." });
                 }
 
-                var nuevaCita = new Cita
-                {
-                    IdCita = Guid.NewGuid().ToString().Substring(0, 8),
-                    IdCiudadano = ciudadano.IdCiudadano,
-                    IdTramite = solicitud.IdTramite,
-                    IdSede = solicitud.IdSede,
-                    FechaHoraInicio = solicitud.FechaHora,
-                    FechaHoraFin = solicitud.FechaHora.AddMinutes(30),
-                    Estatus = "PROGRAMADA"
-                };
+                // Generamos el folio y sacamos la IP real de la conexión
+                string folio = Guid.NewGuid().ToString().Substring(0, 8);
+                string ip = HttpContext.Connection.RemoteIpAddress?.ToString() ?? "Desconocida";
 
-                _context.Citas.Add(nuevaCita);
-                await _context.SaveChangesAsync();
+                // Hacemos el insert directo con SQL para meter los datos del coyote
+                await _context.Database.ExecuteSqlRawAsync(
+                    "INSERT INTO Citas (id_cita, id_ciudadano, id_tramite, id_sede, fecha_hora_inicio, fecha_hora_fin, estatus, ip_origen, navegador, sistema_operativo) VALUES ({0}, {1}, {2}, {3}, {4}, {5}, 'PROGRAMADA', {6}, {7}, {8})",
+                    folio, ciudadano.IdCiudadano, solicitud.IdTramite, solicitud.IdSede, solicitud.FechaHora, solicitud.FechaHora.AddMinutes(30), ip, solicitud.Navegador ?? "Desconocido", solicitud.SistemaOperativo ?? "Desconocido");
 
-                return Ok(new { mensaje = "Cita agendada con éxito", folio = nuevaCita.IdCita });
+                return Ok(new { mensaje = "Cita agendada con éxito", folio = folio });
             }
             catch (Exception ex)
             {
@@ -209,16 +198,15 @@ namespace RegistroCivilAPI.Controllers
 
             return Ok(new { mensaje = "Su cita ha sido cancelada con éxito. El espacio ha sido liberado." });
         }
+
         [HttpGet("PorSede/{idSede}")]
         public async Task<ActionResult> ObtenerCitasPorSede(int idSede, [FromQuery] string? fecha = null, [FromQuery] string? busqueda = null)
         {
-            
             var query = _context.Citas
                 .Include(c => c.IdCiudadanoNavigation)
                 .Include(c => c.IdTramiteNavigation)
                 .Where(c => c.IdSede == idSede).AsQueryable();
 
-           
             if (!string.IsNullOrWhiteSpace(busqueda))
             {
                 busqueda = busqueda.ToLower();
@@ -229,7 +217,6 @@ namespace RegistroCivilAPI.Controllers
             }
             else
             {
-                
                 DateTime fechaFiltro = DateTime.Today;
                 if (!string.IsNullOrEmpty(fecha) && DateTime.TryParse(fecha, out DateTime parsedDate))
                 {
@@ -248,9 +235,13 @@ namespace RegistroCivilAPI.Controllers
                     ciudadano = $"{c.IdCiudadanoNavigation.Nombre} {c.IdCiudadanoNavigation.PrimerApellido} {c.IdCiudadanoNavigation.SegundoApellido}".Trim(),
                     curp = c.IdCiudadanoNavigation.Curp,
                     tramite = c.IdTramiteNavigation.NombreTramite,
-                    fechaStr = c.FechaHoraInicio.ToString("dd/MM/yyyy"), 
+                    fechaStr = c.FechaHoraInicio.ToString("dd/MM/yyyy"),
                     hora = c.FechaHoraInicio.ToString("HH:mm"),
-                    estatus = c.Estatus
+                    estatus = c.Estatus,
+                    // Agregamos lo de los coyotes a la respuesta
+                    ip = c.IpOrigen,
+                    navegador = c.Navegador,
+                    so = c.SistemaOperativo
                 })
                 .ToListAsync();
 
@@ -271,7 +262,7 @@ namespace RegistroCivilAPI.Controllers
                 IdUsuarioInterno = dto.IdUsuarioInterno,
                 TablaAfectada = "Citas",
                 AccionRealizada = "UPDATE",
-                RegistroId = folio, 
+                RegistroId = folio,
                 ValorAnterior = $"Estatus: {valorAnterior}",
                 ValorNuevo = $"Estatus: {dto.NuevoEstatus}",
                 FechaCambio = DateTime.Now
@@ -301,5 +292,9 @@ namespace RegistroCivilAPI.Controllers
         public int IdTramite { get; set; }
         public int IdSede { get; set; }
         public DateTime FechaHora { get; set; }
+
+        // Se agregaron las variables para cachar la info del navegador
+        public string Navegador { get; set; }
+        public string SistemaOperativo { get; set; }
     }
 }

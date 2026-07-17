@@ -18,14 +18,13 @@ namespace RegistroCivilAPI.Controllers
             _context = context;
         }
 
-        
         [HttpGet]
         public async Task<ActionResult> GetPeticiones()
         {
             var peticiones = new List<object>();
             using (var command = _context.Database.GetDbConnection().CreateCommand())
             {
-                command.CommandText = "SELECT id_peticion, username_solicitante, tipo_peticion, descripcion, estatus, fecha_solicitud, respuesta FROM Peticiones_Soporte ORDER BY fecha_solicitud DESC";
+                command.CommandText = "SELECT id_peticion, username_solicitante, tipo_peticion, descripcion, estatus, fecha_solicitud, respuesta, leido FROM Peticiones_Soporte ORDER BY fecha_solicitud DESC";
                 await _context.Database.OpenConnectionAsync();
 
                 using (var result = await command.ExecuteReaderAsync())
@@ -40,7 +39,8 @@ namespace RegistroCivilAPI.Controllers
                             descripcion = result.GetString(3),
                             estatus = result.GetString(4),
                             fecha = result.GetDateTime(5),
-                            respuesta = result.IsDBNull(6) ? "" : result.GetString(6)
+                            respuesta = result.IsDBNull(6) ? "" : result.GetString(6),
+                            leido = result.IsDBNull(7) ? false : result.GetBoolean(7)
                         });
                     }
                 }
@@ -48,14 +48,13 @@ namespace RegistroCivilAPI.Controllers
             return Ok(peticiones);
         }
 
-
         [HttpGet("MisPeticiones/{username}")]
         public async Task<ActionResult> GetMisPeticiones(string username)
         {
             var peticiones = new List<object>();
             using (var command = _context.Database.GetDbConnection().CreateCommand())
             {
-                command.CommandText = $"SELECT id_peticion, tipo_peticion, descripcion, estatus, fecha_solicitud, respuesta FROM Peticiones_Soporte WHERE username_solicitante = '{username}' ORDER BY fecha_solicitud DESC";
+                command.CommandText = $"SELECT id_peticion, tipo_peticion, descripcion, estatus, fecha_solicitud, respuesta, leido FROM Peticiones_Soporte WHERE username_solicitante = '{username}' ORDER BY fecha_solicitud DESC";
                 await _context.Database.OpenConnectionAsync();
 
                 using (var result = await command.ExecuteReaderAsync())
@@ -69,7 +68,8 @@ namespace RegistroCivilAPI.Controllers
                             descripcion = result.GetString(2),
                             estatus = result.GetString(3),
                             fecha = result.GetDateTime(4),
-                            respuesta = result.IsDBNull(5) ? "" : result.GetString(5)
+                            respuesta = result.IsDBNull(5) ? "" : result.GetString(5),
+                            leido = result.IsDBNull(6) ? false : result.GetBoolean(6)
                         });
                     }
                 }
@@ -87,14 +87,28 @@ namespace RegistroCivilAPI.Controllers
             return Ok(new { mensaje = "Tu solicitud ha sido enviada al departamento de Sistemas. Pronto será atendida." });
         }
 
-       
         [HttpPut("{id}/resolver")]
         public async Task<ActionResult> ResolverPeticion(int id, [FromBody] RespuestaDTO dto)
         {
+           
             await _context.Database.ExecuteSqlRawAsync(
-                "UPDATE Peticiones_Soporte SET estatus = 'RESUELTA', respuesta = {0} WHERE id_peticion = {1}",
+                "UPDATE Peticiones_Soporte SET estatus = 'RESUELTA', respuesta = {0}, leido = 0 WHERE id_peticion = {1}",
                 dto.Respuesta, id);
             return Ok(new { mensaje = "Petición marcada como resuelta y mensaje enviado al usuario." });
+        }
+
+        [HttpPut("MarcarLeidasAdmin")]
+        public async Task<ActionResult> MarcarLeidasAdmin()
+        {
+            await _context.Database.ExecuteSqlRawAsync("UPDATE Peticiones_Soporte SET leido = 1 WHERE estatus = 'PENDIENTE'");
+            return Ok();
+        }
+
+        [HttpPut("MarcarLeidasUsuario/{username}")]
+        public async Task<ActionResult> MarcarLeidasUsuario(string username)
+        {
+            await _context.Database.ExecuteSqlRawAsync("UPDATE Peticiones_Soporte SET leido = 1 WHERE username_solicitante = {0} AND estatus = 'RESUELTA'", username);
+            return Ok();
         }
     }
 
