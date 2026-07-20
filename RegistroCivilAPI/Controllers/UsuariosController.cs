@@ -1,6 +1,9 @@
 ﻿using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using RegistroCivilAPI.Models;
+using System.Collections.Generic;
+using System.Linq;
+using System.Threading.Tasks;
 
 namespace RegistroCivilAPI.Controllers
 {
@@ -59,13 +62,49 @@ namespace RegistroCivilAPI.Controllers
             await _context.SaveChangesAsync();
             return Ok(new { mensaje = "Contraseña actualizada exitosamente." });
         }
+
+        
+        [HttpGet("Soporte")]
+        public async Task<ActionResult> GetUsuariosSoporte()
+        {
+            var users = await _context.UsuariosInternos
+                .Where(u => u.Activo == true)
+                .Select(u => new { u.Username, u.NombreCompleto })
+                .ToListAsync();
+            return Ok(users);
+        }
+
         [HttpGet("Accesos")]
-        public async Task<ActionResult> GetAccesos()
+        public async Task<ActionResult> GetAccesos([FromQuery] string? fecha = null, [FromQuery] string? busqueda = null)
         {
             var accesos = new List<object>();
             using (var cmd = _context.Database.GetDbConnection().CreateCommand())
             {
-                cmd.CommandText = "SELECT id_acceso, username, fecha_login, fecha_logout FROM Registro_Accesos ORDER BY fecha_login DESC";
+                string query = "SELECT id_acceso, username, fecha_login, fecha_logout FROM Registro_Accesos WHERE 1=1";
+
+                if (!string.IsNullOrWhiteSpace(busqueda))
+                {
+                    query += " AND (username LIKE @busqueda OR CAST(id_acceso AS VARCHAR) LIKE @busqueda)";
+                    var param = cmd.CreateParameter();
+                    param.ParameterName = "@busqueda";
+                    param.Value = $"%{busqueda}%";
+                    cmd.Parameters.Add(param);
+                }
+                else if (!string.IsNullOrWhiteSpace(fecha))
+                {
+                    if (System.DateTime.TryParse(fecha, out System.DateTime fechaFiltro))
+                    {
+                        query += " AND CAST(fecha_login AS DATE) = @fecha";
+                        var param = cmd.CreateParameter();
+                        param.ParameterName = "@fecha";
+                        param.Value = fechaFiltro.ToString("yyyy-MM-dd");
+                        cmd.Parameters.Add(param);
+                    }
+                }
+
+                query += " ORDER BY fecha_login DESC";
+                cmd.CommandText = query;
+
                 await _context.Database.OpenConnectionAsync();
                 using (var reader = await cmd.ExecuteReaderAsync())
                 {
@@ -76,7 +115,7 @@ namespace RegistroCivilAPI.Controllers
                             idAcceso = reader.GetInt32(0),
                             username = reader.GetString(1),
                             fechaLogin = reader.GetDateTime(2),
-                            fechaLogout = reader.IsDBNull(3) ? (DateTime?)null : reader.GetDateTime(3)
+                            fechaLogout = reader.IsDBNull(3) ? (System.DateTime?)null : reader.GetDateTime(3)
                         });
                     }
                 }
@@ -84,6 +123,7 @@ namespace RegistroCivilAPI.Controllers
             return Ok(accesos);
         }
     }
+
     public class NuevoUsuarioDTO { public string Username { get; set; } public string Password { get; set; } public string NombreCompleto { get; set; } public int IdRol { get; set; } }
     public class PasswordDTO { public string Password { get; set; } }
 }
