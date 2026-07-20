@@ -1,6 +1,8 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Net;
+using System.Net.Mail;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -19,10 +21,9 @@ namespace RegistroCivilAPI.Controllers
             _context = context;
         }
 
-      
+        // --- FUNCIÓN AUTOMÁTICA PARA INASISTENCIAS ---
         private async Task AutoActualizarInasistenciasAsync()
         {
-           
             await _context.Database.ExecuteSqlRawAsync(
                 "UPDATE Citas SET estatus = 'NO_ASISTIO' WHERE estatus IN ('PROGRAMADA', 'CONFIRMADA', 'REPROGRAMADA') AND fecha_hora_fin < GETDATE()"
             );
@@ -119,6 +120,10 @@ namespace RegistroCivilAPI.Controllers
                     "INSERT INTO Citas (id_cita, id_ciudadano, id_tramite, id_sede, fecha_hora_inicio, fecha_hora_fin, estatus, ip_origen, navegador, sistema_operativo) VALUES ({0}, {1}, {2}, {3}, {4}, {5}, 'PROGRAMADA', {6}, {7}, {8})",
                     folio, ciudadano.IdCiudadano, solicitud.IdTramite, solicitud.IdSede, solicitud.FechaHora, solicitud.FechaHora.AddMinutes(30), ip, solicitud.Navegador ?? "Desconocido", solicitud.SistemaOperativo ?? "Desconocido");
 
+                // --- 4. ENVÍO DE CORREO AUTOMÁTICO ---
+                var tramiteEntity = await _context.Tramites.FindAsync(solicitud.IdTramite);
+                _ = EnviarCorreoConfirmacion(ciudadano.Correo, ciudadano.Nombre, folio, solicitud.FechaHora, tramiteEntity?.NombreTramite ?? "Trámite General");
+
                 return Ok(new { mensaje = "Cita agendada con éxito", folio = folio });
             }
             catch (Exception ex)
@@ -128,11 +133,53 @@ namespace RegistroCivilAPI.Controllers
             }
         }
 
+        // --- MÉTODO PARA ENVIAR CORREOS ---
+        private async Task EnviarCorreoConfirmacion(string correoDestino, string nombre, string folio, DateTime fechaHora, string tramite)
+        {
+            try
+            {
+                var smtpClient = new SmtpClient("smtp.gmail.com") // Servidor SMTP de Gmail (puedes cambiarlo a Outlook si prefieres)
+                {
+                    Port = 587,
+                    Credentials = new NetworkCredential("javier.egr06@gmail.com", "mcftdklofmniddds"), // <- ¡PON TUS DATOS AQUÍ PARA PROBAR!
+                    EnableSsl = true,
+                };
+
+                var mensajeHtml = $@"
+                    <div style='font-family: Arial, sans-serif; color: #333; max-width: 600px; margin: 0 auto; border: 1px solid #ddd; border-radius: 10px; overflow: hidden;'>
+                        <div style='background-color: #055A1C; padding: 20px; text-align: center; color: white;'>
+                            <h2>Registro Civil del Estado de San Luis Potosí</h2>
+                        </div>
+                        <div style='padding: 20px;'>
+                            <p>Hola <b>{nombre}</b>,</p>
+                            <p>Su cita ha sido registrada exitosamente en nuestro sistema.</p>
+                            <div style='background-color: #f4f4f4; padding: 15px; border-left: 5px solid #055A1C; margin: 20px 0;'>
+                                <p style='margin: 0;'><b>Trámite:</b> {tramite}</p>
+                                <p style='margin: 10px 0 0 0;'><b>Fecha y Hora:</b> <span style='color: #E60064; font-weight: bold;'>{fechaHora.ToString("dd/MM/yyyy HH:mm")} hrs</span></p>
+                                <h3 style='margin: 15px 0 0 0; color: #055A1C;'>FOLIO: {folio}</h3>
+                            </div>
+                            <p>Le sugerimos llegar 10 minutos antes. Conserve su folio para cualquier aclaración o si desea reagendar su cita en el portal web.</p>
+                        </div>
+                    </div>";
+
+                var mailMessage = new MailMessage
+                {
+                    From = new MailAddress("javier.egr06@gmail.com", "Registro Civil Citas"), // <- PON TU CORREO AQUÍ TAMBIÉN
+                    Subject = $"Confirmación de Cita - Folio: {folio}",
+                    Body = mensajeHtml,
+                    IsBodyHtml = true,
+                };
+                mailMessage.To.Add(correoDestino);
+
+                await smtpClient.SendMailAsync(mailMessage);
+            }
+            catch (Exception) { /* Se captura la excepción pero no rompe el guardado en la base de datos */ }
+        }
+
         [HttpGet("{folio}")]
         public async Task<ActionResult> ObtenerCita(string folio)
         {
             await AutoActualizarInasistenciasAsync();
-
             var cita = await _context.Citas.Include(c => c.IdCiudadanoNavigation).Include(c => c.IdTramiteNavigation).Include(c => c.IdSedeNavigation).FirstOrDefaultAsync(c => c.IdCita == folio);
             if (cita == null) return NotFound(new { mensaje = "No se encontró ninguna cita registrada con este folio." });
 
@@ -171,7 +218,6 @@ namespace RegistroCivilAPI.Controllers
         {
             var cita = await _context.Citas.FirstOrDefaultAsync(c => c.IdCita == folio);
             if (cita == null) return NotFound(new { mensaje = "Cita no encontrada." });
-
             if (cita.Estatus == "CANCELADA" || cita.Estatus == "ATENDIDA" || cita.Estatus == "NO_ASISTIO" || cita.Estatus == "REPROGRAMADA")
                 return BadRequest(new { mensaje = "Solo se permite reprogramar la cita una vez. El estatus actual es " + cita.Estatus });
 
@@ -187,7 +233,6 @@ namespace RegistroCivilAPI.Controllers
         public async Task<ActionResult> ObtenerCitasPorSede(int idSede, [FromQuery] string? fecha = null, [FromQuery] string? busqueda = null)
         {
             await AutoActualizarInasistenciasAsync();
-
             var query = _context.Citas.Include(c => c.IdCiudadanoNavigation).Include(c => c.IdTramiteNavigation).Where(c => c.IdSede == idSede).AsQueryable();
 
             if (!string.IsNullOrWhiteSpace(busqueda))
