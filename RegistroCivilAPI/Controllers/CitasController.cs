@@ -19,6 +19,15 @@ namespace RegistroCivilAPI.Controllers
             _context = context;
         }
 
+      
+        private async Task AutoActualizarInasistenciasAsync()
+        {
+           
+            await _context.Database.ExecuteSqlRawAsync(
+                "UPDATE Citas SET estatus = 'NO_ASISTIO' WHERE estatus IN ('PROGRAMADA', 'CONFIRMADA', 'REPROGRAMADA') AND fecha_hora_fin < GETDATE()"
+            );
+        }
+
         [HttpGet("Horarios")]
         public async Task<ActionResult<IEnumerable<string>>> ObtenerHorariosDisponibles(int idSede, int idTramite, DateTime fecha)
         {
@@ -38,15 +47,12 @@ namespace RegistroCivilAPI.Controllers
             int limiteDiario = tramite.LimiteDiarioSede > 0 ? tramite.LimiteDiarioSede : 999;
 
             var cantidadCitasDia = await _context.Citas
-                .CountAsync(c => c.IdSede == idSede && c.IdTramite == idTramite && c.FechaHoraInicio.Date == fecha.Date && c.Estatus == "PROGRAMADA");
+                .CountAsync(c => c.IdSede == idSede && c.IdTramite == idTramite && c.FechaHoraInicio.Date == fecha.Date && (c.Estatus == "PROGRAMADA" || c.Estatus == "REPROGRAMADA"));
 
-            if (cantidadCitasDia >= limiteDiario)
-            {
-                return Ok(new List<string>());
-            }
+            if (cantidadCitasDia >= limiteDiario) return Ok(new List<string>());
 
             var horasOcupadas = await _context.Citas
-                .Where(c => c.IdSede == idSede && c.FechaHoraInicio.Date == fecha.Date && c.Estatus == "PROGRAMADA")
+                .Where(c => c.IdSede == idSede && c.FechaHoraInicio.Date == fecha.Date && (c.Estatus == "PROGRAMADA" || c.Estatus == "REPROGRAMADA"))
                 .Select(c => TimeOnly.FromDateTime(c.FechaHoraInicio)).ToListAsync();
 
             var horasDisponibles = new List<string>();
@@ -55,16 +61,8 @@ namespace RegistroCivilAPI.Controllers
 
             while (horaActual < horarioSede.HoraCierre)
             {
-                if (fecha.Date == DateTime.Today && horaActual <= now)
-                {
-                    horaActual = horaActual.AddMinutes(intervalo); continue;
-                }
-
-                if (!horasOcupadas.Contains(horaActual))
-                {
-                    horasDisponibles.Add(horaActual.ToString("HH:mm"));
-                }
-
+                if (fecha.Date == DateTime.Today && horaActual <= now) { horaActual = horaActual.AddMinutes(intervalo); continue; }
+                if (!horasOcupadas.Contains(horaActual)) { horasDisponibles.Add(horaActual.ToString("HH:mm")); }
                 horaActual = horaActual.AddMinutes(intervalo);
             }
             return Ok(horasDisponibles);
@@ -76,28 +74,17 @@ namespace RegistroCivilAPI.Controllers
             try
             {
                 Ciudadano ciudadano = null;
-
                 string curpBuscado = string.IsNullOrWhiteSpace(solicitud.Curp) ? null : solicitud.Curp.Trim().ToUpper();
                 string nombreBuscado = string.IsNullOrWhiteSpace(solicitud.Nombre) ? null : solicitud.Nombre.Trim().ToUpper();
 
-                if (curpBuscado != null)
-                {
-                    ciudadano = await _context.Ciudadanos.FirstOrDefaultAsync(c => c.Curp == curpBuscado);
-                }
-                else if (nombreBuscado != null)
-                {
-                    ciudadano = await _context.Ciudadanos.FirstOrDefaultAsync(c => c.Nombre.ToUpper() == nombreBuscado);
-                }
+                if (curpBuscado != null) ciudadano = await _context.Ciudadanos.FirstOrDefaultAsync(c => c.Curp == curpBuscado);
+                else if (nombreBuscado != null) ciudadano = await _context.Ciudadanos.FirstOrDefaultAsync(c => c.Nombre.ToUpper() == nombreBuscado);
 
                 if (ciudadano == null)
                 {
                     string curpFinal = curpBuscado ?? "ENM" + Guid.NewGuid().ToString("N").Substring(0, 15).ToUpper();
                     var partesNombre = solicitud.Nombre.Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries);
-
-                    string origenRegistro = string.IsNullOrWhiteSpace(solicitud.EstadoRegistro)
-                        ? solicitud.MunicipioRegistro
-                        : $"{solicitud.EstadoRegistro} - {solicitud.MunicipioRegistro}";
-
+                    string origenRegistro = string.IsNullOrWhiteSpace(solicitud.EstadoRegistro) ? solicitud.MunicipioRegistro : $"{solicitud.EstadoRegistro} - {solicitud.MunicipioRegistro}";
                     if (string.IsNullOrWhiteSpace(origenRegistro)) origenRegistro = "MANUAL";
                     if (origenRegistro.Length > 145) origenRegistro = origenRegistro.Substring(0, 145);
 
@@ -116,34 +103,18 @@ namespace RegistroCivilAPI.Controllers
                     string correo = solicitud.Correo?.Trim();
                     if (correo != null && correo.Length > 100) correo = correo.Substring(0, 100);
 
-                    ciudadano = new Ciudadano
-                    {
-                        Curp = curpFinal,
-                        Nombre = nombrePila,
-                        PrimerApellido = primerAp,
-                        SegundoApellido = segundoAp,
-                        Correo = correo,
-                        Telefono = tel,
-                        OrigenRegistro = origenRegistro
-                    };
-
+                    ciudadano = new Ciudadano { Curp = curpFinal, Nombre = nombrePila, PrimerApellido = primerAp, SegundoApellido = segundoAp, Correo = correo, Telefono = tel, OrigenRegistro = origenRegistro };
                     _context.Ciudadanos.Add(ciudadano);
                     await _context.SaveChangesAsync();
                 }
 
-                var citaMismoTramite = await _context.Citas
-                    .AnyAsync(c => c.IdCiudadano == ciudadano.IdCiudadano && c.IdTramite == solicitud.IdTramite && c.Estatus == "PROGRAMADA");
+                var citaMismoTramite = await _context.Citas.AnyAsync(c => c.IdCiudadano == ciudadano.IdCiudadano && c.IdTramite == solicitud.IdTramite && (c.Estatus == "PROGRAMADA" || c.Estatus == "REPROGRAMADA"));
 
-                if (citaMismoTramite)
-                {
-                    return BadRequest(new { mensaje = "Alerta: Usted ya tiene una cita programada para este trámite específico. Por favor, seleccione otro servicio." });
-                }
+                if (citaMismoTramite) return BadRequest(new { mensaje = "Alerta: Usted ya tiene una cita programada para este trámite específico. Por favor, seleccione otro servicio." });
 
-                // Generamos el folio y sacamos la IP real de la conexión
                 string folio = Guid.NewGuid().ToString().Substring(0, 8);
                 string ip = HttpContext.Connection.RemoteIpAddress?.ToString() ?? "Desconocida";
 
-                // Hacemos el insert directo con SQL para meter los datos del coyote
                 await _context.Database.ExecuteSqlRawAsync(
                     "INSERT INTO Citas (id_cita, id_ciudadano, id_tramite, id_sede, fecha_hora_inicio, fecha_hora_fin, estatus, ip_origen, navegador, sistema_operativo) VALUES ({0}, {1}, {2}, {3}, {4}, {5}, 'PROGRAMADA', {6}, {7}, {8})",
                     folio, ciudadano.IdCiudadano, solicitud.IdTramite, solicitud.IdSede, solicitud.FechaHora, solicitud.FechaHora.AddMinutes(30), ip, solicitud.Navegador ?? "Desconocido", solicitud.SistemaOperativo ?? "Desconocido");
@@ -160,12 +131,9 @@ namespace RegistroCivilAPI.Controllers
         [HttpGet("{folio}")]
         public async Task<ActionResult> ObtenerCita(string folio)
         {
-            var cita = await _context.Citas
-                .Include(c => c.IdCiudadanoNavigation)
-                .Include(c => c.IdTramiteNavigation)
-                .Include(c => c.IdSedeNavigation)
-                .FirstOrDefaultAsync(c => c.IdCita == folio);
+            await AutoActualizarInasistenciasAsync();
 
+            var cita = await _context.Citas.Include(c => c.IdCiudadanoNavigation).Include(c => c.IdTramiteNavigation).Include(c => c.IdSedeNavigation).FirstOrDefaultAsync(c => c.IdCita == folio);
             if (cita == null) return NotFound(new { mensaje = "No se encontró ninguna cita registrada con este folio." });
 
             return Ok(new
@@ -174,9 +142,11 @@ namespace RegistroCivilAPI.Controllers
                 estatus = cita.Estatus,
                 fecha = cita.FechaHoraInicio.ToString("yyyy-MM-dd"),
                 hora = cita.FechaHoraInicio.ToString("HH:mm"),
+                idTramite = cita.IdTramite,
                 tramite = cita.IdTramiteNavigation.NombreTramite,
                 costo = cita.IdTramiteNavigation.Costo,
                 duracion = cita.IdTramiteNavigation.DuracionMinutos,
+                idSede = cita.IdSede,
                 sede = cita.IdSedeNavigation.Nombre,
                 direccion = cita.IdSedeNavigation.Direccion,
                 ciudadano = $"{cita.IdCiudadanoNavigation.Nombre} {cita.IdCiudadanoNavigation.PrimerApellido} {cita.IdCiudadanoNavigation.SegundoApellido}".Trim(),
@@ -189,61 +159,61 @@ namespace RegistroCivilAPI.Controllers
         {
             var cita = await _context.Citas.FirstOrDefaultAsync(c => c.IdCita == folio);
             if (cita == null) return NotFound(new { mensaje = "Cita no encontrada." });
-
             if (cita.Estatus == "CANCELADA") return BadRequest(new { mensaje = "La cita ya se encuentra cancelada." });
             if (cita.FechaHoraInicio < DateTime.Now) return BadRequest(new { mensaje = "No se puede cancelar una cita de una fecha que ya pasó." });
 
-            cita.Estatus = "CANCELADA";
+            cita.Estatus = "CANCELADA"; await _context.SaveChangesAsync();
+            return Ok(new { mensaje = "Su cita ha sido cancelada con éxito. El espacio ha sido liberado." });
+        }
+
+        [HttpPut("{folio}/reagendar")]
+        public async Task<ActionResult> ReagendarCita(string folio, [FromBody] ReagendarDTO dto)
+        {
+            var cita = await _context.Citas.FirstOrDefaultAsync(c => c.IdCita == folio);
+            if (cita == null) return NotFound(new { mensaje = "Cita no encontrada." });
+
+            if (cita.Estatus == "CANCELADA" || cita.Estatus == "ATENDIDA" || cita.Estatus == "NO_ASISTIO" || cita.Estatus == "REPROGRAMADA")
+                return BadRequest(new { mensaje = "Solo se permite reprogramar la cita una vez. El estatus actual es " + cita.Estatus });
+
+            cita.FechaHoraInicio = dto.NuevaFechaHora;
+            cita.FechaHoraFin = dto.NuevaFechaHora.AddMinutes(30);
+            cita.Estatus = "REPROGRAMADA";
             await _context.SaveChangesAsync();
 
-            return Ok(new { mensaje = "Su cita ha sido cancelada con éxito. El espacio ha sido liberado." });
+            return Ok(new { mensaje = "Cita reagendada con éxito." });
         }
 
         [HttpGet("PorSede/{idSede}")]
         public async Task<ActionResult> ObtenerCitasPorSede(int idSede, [FromQuery] string? fecha = null, [FromQuery] string? busqueda = null)
         {
-            var query = _context.Citas
-                .Include(c => c.IdCiudadanoNavigation)
-                .Include(c => c.IdTramiteNavigation)
-                .Where(c => c.IdSede == idSede).AsQueryable();
+            await AutoActualizarInasistenciasAsync();
+
+            var query = _context.Citas.Include(c => c.IdCiudadanoNavigation).Include(c => c.IdTramiteNavigation).Where(c => c.IdSede == idSede).AsQueryable();
 
             if (!string.IsNullOrWhiteSpace(busqueda))
             {
                 busqueda = busqueda.ToLower();
-                query = query.Where(c => c.IdCita.ToLower().Contains(busqueda) ||
-                                         c.IdCiudadanoNavigation.Curp.ToLower().Contains(busqueda) ||
-                                         c.IdCiudadanoNavigation.Nombre.ToLower().Contains(busqueda) ||
-                                         c.IdCiudadanoNavigation.PrimerApellido.ToLower().Contains(busqueda));
+                query = query.Where(c => c.IdCita.ToLower().Contains(busqueda) || c.IdCiudadanoNavigation.Curp.ToLower().Contains(busqueda) || c.IdCiudadanoNavigation.Nombre.ToLower().Contains(busqueda) || c.IdCiudadanoNavigation.PrimerApellido.ToLower().Contains(busqueda));
             }
             else
             {
                 DateTime fechaFiltro = DateTime.Today;
-                if (!string.IsNullOrEmpty(fecha) && DateTime.TryParse(fecha, out DateTime parsedDate))
-                {
-                    fechaFiltro = parsedDate.Date;
-                }
-
-                query = query.Where(c => c.FechaHoraInicio.Year == fechaFiltro.Year &&
-                                         c.FechaHoraInicio.Month == fechaFiltro.Month &&
-                                         c.FechaHoraInicio.Day == fechaFiltro.Day);
+                if (!string.IsNullOrEmpty(fecha) && DateTime.TryParse(fecha, out DateTime parsedDate)) fechaFiltro = parsedDate.Date;
+                query = query.Where(c => c.FechaHoraInicio.Year == fechaFiltro.Year && c.FechaHoraInicio.Month == fechaFiltro.Month && c.FechaHoraInicio.Day == fechaFiltro.Day);
             }
 
-            var citas = await query
-                .OrderBy(c => c.FechaHoraInicio)
-                .Select(c => new {
-                    folio = c.IdCita,
-                    ciudadano = $"{c.IdCiudadanoNavigation.Nombre} {c.IdCiudadanoNavigation.PrimerApellido} {c.IdCiudadanoNavigation.SegundoApellido}".Trim(),
-                    curp = c.IdCiudadanoNavigation.Curp,
-                    tramite = c.IdTramiteNavigation.NombreTramite,
-                    fechaStr = c.FechaHoraInicio.ToString("dd/MM/yyyy"),
-                    hora = c.FechaHoraInicio.ToString("HH:mm"),
-                    estatus = c.Estatus,
-                    // Agregamos lo de los coyotes a la respuesta
-                    ip = c.IpOrigen,
-                    navegador = c.Navegador,
-                    so = c.SistemaOperativo
-                })
-                .ToListAsync();
+            var citas = await query.OrderBy(c => c.FechaHoraInicio).Select(c => new {
+                folio = c.IdCita,
+                ciudadano = $"{c.IdCiudadanoNavigation.Nombre} {c.IdCiudadanoNavigation.PrimerApellido} {c.IdCiudadanoNavigation.SegundoApellido}".Trim(),
+                curp = c.IdCiudadanoNavigation.Curp,
+                tramite = c.IdTramiteNavigation.NombreTramite,
+                fechaStr = c.FechaHoraInicio.ToString("dd/MM/yyyy"),
+                hora = c.FechaHoraInicio.ToString("HH:mm"),
+                estatus = c.Estatus,
+                ip = c.IpOrigen,
+                navegador = c.Navegador,
+                so = c.SistemaOperativo
+            }).ToListAsync();
 
             return Ok(citas);
         }
@@ -257,17 +227,7 @@ namespace RegistroCivilAPI.Controllers
             string valorAnterior = cita.Estatus;
             cita.Estatus = dto.NuevoEstatus;
 
-            var bitacora = new BitacoraAuditorium
-            {
-                IdUsuarioInterno = dto.IdUsuarioInterno,
-                TablaAfectada = "Citas",
-                AccionRealizada = "UPDATE",
-                RegistroId = folio,
-                ValorAnterior = $"Estatus: {valorAnterior}",
-                ValorNuevo = $"Estatus: {dto.NuevoEstatus}",
-                FechaCambio = DateTime.Now
-            };
-
+            var bitacora = new BitacoraAuditorium { IdUsuarioInterno = dto.IdUsuarioInterno, TablaAfectada = "Citas", AccionRealizada = "UPDATE", RegistroId = folio, ValorAnterior = $"Estatus: {valorAnterior}", ValorNuevo = $"Estatus: {dto.NuevoEstatus}", FechaCambio = DateTime.Now };
             _context.BitacoraAuditoria.Add(bitacora);
             await _context.SaveChangesAsync();
 
@@ -275,12 +235,8 @@ namespace RegistroCivilAPI.Controllers
         }
     }
 
-    public class CambioEstatusDTO
-    {
-        public string NuevoEstatus { get; set; }
-        public int IdUsuarioInterno { get; set; }
-    }
-
+    public class CambioEstatusDTO { public string NuevoEstatus { get; set; } public int IdUsuarioInterno { get; set; } }
+    public class ReagendarDTO { public DateTime NuevaFechaHora { get; set; } }
     public class CitaDTO
     {
         public string Curp { get; set; }
@@ -292,8 +248,6 @@ namespace RegistroCivilAPI.Controllers
         public int IdTramite { get; set; }
         public int IdSede { get; set; }
         public DateTime FechaHora { get; set; }
-
-        // Se agregaron las variables para cachar la info del navegador
         public string Navegador { get; set; }
         public string SistemaOperativo { get; set; }
     }
