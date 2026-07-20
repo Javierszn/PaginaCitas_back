@@ -120,9 +120,11 @@ namespace RegistroCivilAPI.Controllers
                     "INSERT INTO Citas (id_cita, id_ciudadano, id_tramite, id_sede, fecha_hora_inicio, fecha_hora_fin, estatus, ip_origen, navegador, sistema_operativo) VALUES ({0}, {1}, {2}, {3}, {4}, {5}, 'PROGRAMADA', {6}, {7}, {8})",
                     folio, ciudadano.IdCiudadano, solicitud.IdTramite, solicitud.IdSede, solicitud.FechaHora, solicitud.FechaHora.AddMinutes(30), ip, solicitud.Navegador ?? "Desconocido", solicitud.SistemaOperativo ?? "Desconocido");
 
-                // --- 4. ENVÍO DE CORREO AUTOMÁTICO ---
+                // --- 4. ENVÍO DE CORREO AUTOMÁTICO (AHORA CON AWAIT) ---
                 var tramiteEntity = await _context.Tramites.FindAsync(solicitud.IdTramite);
-                _ = EnviarCorreoConfirmacion(ciudadano.Correo, ciudadano.Nombre, folio, solicitud.FechaHora, tramiteEntity?.NombreTramite ?? "Trámite General");
+
+                // Usamos await para que el proceso no se corte antes de enviar el correo
+                await EnviarCorreoConfirmacion(ciudadano.Correo, ciudadano.Nombre, folio, solicitud.FechaHora, tramiteEntity?.NombreTramite ?? "Trámite General");
 
                 return Ok(new { mensaje = "Cita agendada con éxito", folio = folio });
             }
@@ -138,10 +140,10 @@ namespace RegistroCivilAPI.Controllers
         {
             try
             {
-                var smtpClient = new SmtpClient("smtp.gmail.com") // Servidor SMTP de Gmail (puedes cambiarlo a Outlook si prefieres)
+                var smtpClient = new SmtpClient("smtp.gmail.com")
                 {
                     Port = 587,
-                    Credentials = new NetworkCredential("javier.egr06@gmail.com", "mcftdklofmniddds"), // <- ¡PON TUS DATOS AQUÍ PARA PROBAR!
+                    Credentials = new NetworkCredential("javier.egr06@gmail.com", "mcftdklofmniddds"), // <- ¡PON TU CORREO Y LA CONTRASEÑA DE APLICACIÓN DE 16 LETRAS AQUÍ!
                     EnableSsl = true,
                 };
 
@@ -173,7 +175,13 @@ namespace RegistroCivilAPI.Controllers
 
                 await smtpClient.SendMailAsync(mailMessage);
             }
-            catch (Exception) { /* Se captura la excepción pero no rompe el guardado en la base de datos */ }
+            catch (Exception ex)
+            {
+                // AHORA IMPRIMIRÁ EL ERROR EN LA CONSOLA PARA SABER QUÉ PASA
+                Console.WriteLine("===================================================");
+                Console.WriteLine("ERROR AL ENVIAR CORREO: " + ex.Message);
+                Console.WriteLine("===================================================");
+            }
         }
 
         [HttpGet("{folio}")]

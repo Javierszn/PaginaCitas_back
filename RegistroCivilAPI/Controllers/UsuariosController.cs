@@ -17,8 +17,19 @@ namespace RegistroCivilAPI.Controllers
         [HttpGet]
         public async Task<ActionResult> GetUsuarios()
         {
-            var users = await _context.UsuariosInternos.Include(u => u.IdRolNavigation)
-                .Select(u => new { u.IdUsuario, u.Username, u.NombreCompleto, u.IdRol, Rol = u.IdRolNavigation.NombreRol, u.Activo }).ToListAsync();
+            var users = await _context.UsuariosInternos
+                .Include(u => u.IdRolNavigation)
+                .Include(u => u.IdSedeNavigation) // Ahora traemos la info de la sede
+                .Select(u => new {
+                    u.IdUsuario,
+                    u.Username,
+                    u.NombreCompleto,
+                    u.IdRol,
+                    Rol = u.IdRolNavigation.NombreRol,
+                    u.IdSede,
+                    Sede = u.IdSedeNavigation.Nombre,
+                    u.Activo
+                }).ToListAsync();
             return Ok(users);
         }
 
@@ -28,8 +39,18 @@ namespace RegistroCivilAPI.Controllers
             var existe = await _context.UsuariosInternos.AnyAsync(u => u.Username == dto.Username);
             if (existe) return BadRequest(new { mensaje = "El nombre de usuario ya existe." });
 
-            var n = new UsuariosInterno { Username = dto.Username, PasswordHash = dto.Password, NombreCompleto = dto.NombreCompleto, IdRol = dto.IdRol, IdSede = 1, Activo = true, RequiereCambioPassword = true };
-            _context.UsuariosInternos.Add(n); await _context.SaveChangesAsync();
+            var n = new UsuariosInterno
+            {
+                Username = dto.Username,
+                PasswordHash = dto.Password,
+                NombreCompleto = dto.NombreCompleto,
+                IdRol = dto.IdRol,
+                IdSede = dto.IdSede, // SE INYECTA LA SEDE CORRECTA AQUÍ
+                Activo = true,
+                RequiereCambioPassword = true
+            };
+            _context.UsuariosInternos.Add(n);
+            await _context.SaveChangesAsync();
             return Ok(new { mensaje = "Usuario creado. Se le pedirá cambiar la contraseña en su primer inicio de sesión." });
         }
 
@@ -50,6 +71,18 @@ namespace RegistroCivilAPI.Controllers
             await _context.SaveChangesAsync(); return Ok(new { mensaje = "Contraseña actualizada exitosamente." });
         }
 
+        // --- NUEVO: ACTUALIZAR SEDE DEL USUARIO ---
+        [HttpPut("{id}/sede")]
+        public async Task<ActionResult> UpdateSede(int id, [FromBody] SedeUpdateDTO dto)
+        {
+            var u = await _context.UsuariosInternos.FindAsync(id);
+            if (u == null) return NotFound(new { mensaje = "Usuario no encontrado." });
+
+            u.IdSede = dto.IdSede;
+            await _context.SaveChangesAsync();
+            return Ok(new { mensaje = "La sucursal del empleado fue actualizada correctamente." });
+        }
+
         [HttpGet("Soporte")]
         public async Task<ActionResult> GetUsuariosSoporte()
         {
@@ -57,7 +90,6 @@ namespace RegistroCivilAPI.Controllers
             return Ok(users);
         }
 
-  
         [HttpGet("Accesos")]
         public async Task<ActionResult> GetAccesos([FromQuery] string? fecha = null, [FromQuery] string? busqueda = null, [FromQuery] int page = 1, [FromQuery] int pageSize = 10)
         {
@@ -67,7 +99,6 @@ namespace RegistroCivilAPI.Controllers
 
             using (var cmd = _context.Database.GetDbConnection().CreateCommand())
             {
-                
                 string filterQuery = " WHERE 1=1";
                 if (!string.IsNullOrWhiteSpace(busqueda)) { filterQuery += $" AND (username LIKE '%{busqueda}%' OR CAST(id_acceso AS VARCHAR) LIKE '%{busqueda}%')"; }
                 else if (!string.IsNullOrWhiteSpace(fecha))
@@ -79,7 +110,6 @@ namespace RegistroCivilAPI.Controllers
                 await _context.Database.OpenConnectionAsync();
                 totalRegistros = (int)await cmd.ExecuteScalarAsync();
 
-               
                 cmd.CommandText = $"SELECT id_acceso, username, fecha_login, fecha_logout FROM Registro_Accesos {filterQuery} ORDER BY fecha_login DESC OFFSET {offset} ROWS FETCH NEXT {pageSize} ROWS ONLY";
 
                 using (var reader = await cmd.ExecuteReaderAsync())
@@ -97,20 +127,13 @@ namespace RegistroCivilAPI.Controllers
                 }
             }
 
-         
             int totalPaginas = (int)System.Math.Ceiling((double)totalRegistros / pageSize);
 
-           
-            return Ok(new
-            {
-                Datos = accesos,
-                PaginaActual = page,
-                TotalPaginas = totalPaginas,
-                TotalRegistros = totalRegistros
-            });
+            return Ok(new { Datos = accesos, PaginaActual = page, TotalPaginas = totalPaginas, TotalRegistros = totalRegistros });
         }
     }
 
-    public class NuevoUsuarioDTO { public string Username { get; set; } public string Password { get; set; } public string NombreCompleto { get; set; } public int IdRol { get; set; } }
+    public class NuevoUsuarioDTO { public string Username { get; set; } public string Password { get; set; } public string NombreCompleto { get; set; } public int IdRol { get; set; } public int IdSede { get; set; } }
     public class PasswordDTO { public string Password { get; set; } }
+    public class SedeUpdateDTO { public int IdSede { get; set; } }
 }
