@@ -19,7 +19,7 @@ namespace RegistroCivilAPI.Controllers
         {
             var users = await _context.UsuariosInternos
                 .Include(u => u.IdRolNavigation)
-                .Include(u => u.IdSedeNavigation) // Ahora traemos la info de la sede
+                .Include(u => u.IdSedeNavigation) 
                 .Select(u => new {
                     u.IdUsuario,
                     u.Username,
@@ -45,7 +45,7 @@ namespace RegistroCivilAPI.Controllers
                 PasswordHash = dto.Password,
                 NombreCompleto = dto.NombreCompleto,
                 IdRol = dto.IdRol,
-                IdSede = dto.IdSede, // SE INYECTA LA SEDE CORRECTA AQUÍ
+                IdSede = dto.IdSede, 
                 Activo = true,
                 RequiereCambioPassword = true
             };
@@ -71,7 +71,7 @@ namespace RegistroCivilAPI.Controllers
             await _context.SaveChangesAsync(); return Ok(new { mensaje = "Contraseña actualizada exitosamente." });
         }
 
-        // --- NUEVO: ACTUALIZAR SEDE DEL USUARIO ---
+       
         [HttpPut("{id}/sede")]
         public async Task<ActionResult> UpdateSede(int id, [FromBody] SedeUpdateDTO dto)
         {

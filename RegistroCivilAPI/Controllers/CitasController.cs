@@ -135,7 +135,6 @@ namespace RegistroCivilAPI.Controllers
             }
         }
 
-        // --- MÉTODO PARA ENVIAR CORREOS ---
         private async Task EnviarCorreoConfirmacion(string correoDestino, string nombre, string folio, DateTime fechaHora, string tramite)
         {
             try
@@ -143,7 +142,7 @@ namespace RegistroCivilAPI.Controllers
                 var smtpClient = new SmtpClient("smtp.gmail.com")
                 {
                     Port = 587,
-                    Credentials = new NetworkCredential("javier.egr06@gmail.com", "mcftdklofmniddds"), // <- ¡PON TU CORREO Y LA CONTRASEÑA DE APLICACIÓN DE 16 LETRAS AQUÍ!
+                    Credentials = new NetworkCredential("javier.egr06@gmail.com", "mcftdklofmniddds"), 
                     EnableSsl = true,
                 };
 
@@ -166,7 +165,7 @@ namespace RegistroCivilAPI.Controllers
 
                 var mailMessage = new MailMessage
                 {
-                    From = new MailAddress("javier.egr06@gmail.com", "Registro Civil Citas"), // <- PON TU CORREO AQUÍ TAMBIÉN
+                    From = new MailAddress("javier.egr06@gmail.com", "Registro Civil Citas"),
                     Subject = $"Confirmación de Cita - Folio: {folio}",
                     Body = mensajeHtml,
                     IsBodyHtml = true,
@@ -177,7 +176,7 @@ namespace RegistroCivilAPI.Controllers
             }
             catch (Exception ex)
             {
-                // AHORA IMPRIMIRÁ EL ERROR EN LA CONSOLA PARA SABER QUÉ PASA
+                
                 Console.WriteLine("===================================================");
                 Console.WriteLine("ERROR AL ENVIAR CORREO: " + ex.Message);
                 Console.WriteLine("===================================================");
