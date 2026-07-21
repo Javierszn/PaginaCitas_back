@@ -54,7 +54,14 @@ namespace RegistroCivilAPI.Controllers
             var peticiones = new List<object>();
             using (var command = _context.Database.GetDbConnection().CreateCommand())
             {
-                command.CommandText = $"SELECT id_peticion, tipo_peticion, descripcion, estatus, fecha_solicitud, respuesta, leido FROM Peticiones_Soporte WHERE username_solicitante = '{username}' ORDER BY fecha_solicitud DESC";
+                // PROTECCIÓN ANTI-INYECCIÓN SQL APLICADA
+                command.CommandText = "SELECT id_peticion, tipo_peticion, descripcion, estatus, fecha_solicitud, respuesta, leido FROM Peticiones_Soporte WHERE username_solicitante = @username ORDER BY fecha_solicitud DESC";
+
+                var paramUsername = command.CreateParameter();
+                paramUsername.ParameterName = "@username";
+                paramUsername.Value = username;
+                command.Parameters.Add(paramUsername);
+
                 await _context.Database.OpenConnectionAsync();
 
                 using (var result = await command.ExecuteReaderAsync())
@@ -90,7 +97,7 @@ namespace RegistroCivilAPI.Controllers
         [HttpPut("{id}/resolver")]
         public async Task<ActionResult> ResolverPeticion(int id, [FromBody] RespuestaDTO dto)
         {
-           
+
             await _context.Database.ExecuteSqlRawAsync(
                 "UPDATE Peticiones_Soporte SET estatus = 'RESUELTA', respuesta = {0}, leido = 0 WHERE id_peticion = {1}",
                 dto.Respuesta, id);

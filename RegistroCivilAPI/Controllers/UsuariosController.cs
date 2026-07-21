@@ -4,9 +4,11 @@ using RegistroCivilAPI.Models;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
+using Microsoft.AspNetCore.Authorization;
 
 namespace RegistroCivilAPI.Controllers
 {
+    [Authorize]
     [Route("api/[controller]")]
     [ApiController]
     public class UsuariosController : ControllerBase
@@ -19,7 +21,7 @@ namespace RegistroCivilAPI.Controllers
         {
             var users = await _context.UsuariosInternos
                 .Include(u => u.IdRolNavigation)
-                .Include(u => u.IdSedeNavigation) 
+                .Include(u => u.IdSedeNavigation)
                 .Select(u => new {
                     u.IdUsuario,
                     u.Username,
@@ -39,19 +41,22 @@ namespace RegistroCivilAPI.Controllers
             var existe = await _context.UsuariosInternos.AnyAsync(u => u.Username == dto.Username);
             if (existe) return BadRequest(new { mensaje = "El nombre de usuario ya existe." });
 
+            // ENCRIPTACIÓN DE CONTRASEÑA NUEVA
+            string passwordEncriptada = BCrypt.Net.BCrypt.HashPassword(dto.Password);
+
             var n = new UsuariosInterno
             {
                 Username = dto.Username,
-                PasswordHash = dto.Password,
+                PasswordHash = passwordEncriptada,
                 NombreCompleto = dto.NombreCompleto,
                 IdRol = dto.IdRol,
-                IdSede = dto.IdSede, 
+                IdSede = dto.IdSede,
                 Activo = true,
                 RequiereCambioPassword = true
             };
             _context.UsuariosInternos.Add(n);
             await _context.SaveChangesAsync();
-            return Ok(new { mensaje = "Usuario creado. Se le pedirá cambiar la contraseña en su primer inicio de sesión." });
+            return Ok(new { mensaje = "Usuario creado con contraseña encriptada." });
         }
 
         [HttpPut("{id}/estado")]
@@ -67,11 +72,15 @@ namespace RegistroCivilAPI.Controllers
         {
             var u = await _context.UsuariosInternos.FindAsync(id);
             if (u == null) return NotFound();
-            u.PasswordHash = dto.Password; u.RequiereCambioPassword = false;
-            await _context.SaveChangesAsync(); return Ok(new { mensaje = "Contraseña actualizada exitosamente." });
+
+            // ENCRIPTACIÓN DE CONTRASEÑA ACTUALIZADA
+            u.PasswordHash = BCrypt.Net.BCrypt.HashPassword(dto.Password);
+            u.RequiereCambioPassword = false;
+
+            await _context.SaveChangesAsync();
+            return Ok(new { mensaje = "Contraseña actualizada y encriptada exitosamente." });
         }
 
-       
         [HttpPut("{id}/sede")]
         public async Task<ActionResult> UpdateSede(int id, [FromBody] SedeUpdateDTO dto)
         {
@@ -100,10 +109,25 @@ namespace RegistroCivilAPI.Controllers
             using (var cmd = _context.Database.GetDbConnection().CreateCommand())
             {
                 string filterQuery = " WHERE 1=1";
-                if (!string.IsNullOrWhiteSpace(busqueda)) { filterQuery += $" AND (username LIKE '%{busqueda}%' OR CAST(id_acceso AS VARCHAR) LIKE '%{busqueda}%')"; }
+
+                if (!string.IsNullOrWhiteSpace(busqueda))
+                {
+                    filterQuery += " AND (username LIKE @busqueda OR CAST(id_acceso AS VARCHAR) LIKE @busqueda)";
+                    var paramBusqueda = cmd.CreateParameter();
+                    paramBusqueda.ParameterName = "@busqueda";
+                    paramBusqueda.Value = $"%{busqueda}%";
+                    cmd.Parameters.Add(paramBusqueda);
+                }
                 else if (!string.IsNullOrWhiteSpace(fecha))
                 {
-                    if (System.DateTime.TryParse(fecha, out System.DateTime fechaFiltro)) { filterQuery += $" AND CAST(fecha_login AS DATE) = '{fechaFiltro.ToString("yyyy-MM-dd")}'"; }
+                    if (System.DateTime.TryParse(fecha, out System.DateTime fechaFiltro))
+                    {
+                        filterQuery += " AND CAST(fecha_login AS DATE) = @fecha";
+                        var paramFecha = cmd.CreateParameter();
+                        paramFecha.ParameterName = "@fecha";
+                        paramFecha.Value = fechaFiltro.ToString("yyyy-MM-dd");
+                        cmd.Parameters.Add(paramFecha);
+                    }
                 }
 
                 cmd.CommandText = "SELECT COUNT(*) FROM Registro_Accesos" + filterQuery;
@@ -128,7 +152,6 @@ namespace RegistroCivilAPI.Controllers
             }
 
             int totalPaginas = (int)System.Math.Ceiling((double)totalRegistros / pageSize);
-
             return Ok(new { Datos = accesos, PaginaActual = page, TotalPaginas = totalPaginas, TotalRegistros = totalRegistros });
         }
     }

@@ -6,6 +6,7 @@ using System.Net.Mail;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
 using RegistroCivilAPI.Models;
 
 namespace RegistroCivilAPI.Controllers
@@ -15,13 +16,15 @@ namespace RegistroCivilAPI.Controllers
     public class CitasController : ControllerBase
     {
         private readonly RegistroCivilCitasContext _context;
+        private readonly IConfiguration _config; // NUEVO: Para leer el appsettings.json
 
-        public CitasController(RegistroCivilCitasContext context)
+        // Inyectamos IConfiguration en el constructor
+        public CitasController(RegistroCivilCitasContext context, IConfiguration config)
         {
             _context = context;
+            _config = config;
         }
 
-        // --- FUNCIÓN AUTOMÁTICA PARA INASISTENCIAS ---
         private async Task AutoActualizarInasistenciasAsync()
         {
             await _context.Database.ExecuteSqlRawAsync(
@@ -120,10 +123,7 @@ namespace RegistroCivilAPI.Controllers
                     "INSERT INTO Citas (id_cita, id_ciudadano, id_tramite, id_sede, fecha_hora_inicio, fecha_hora_fin, estatus, ip_origen, navegador, sistema_operativo) VALUES ({0}, {1}, {2}, {3}, {4}, {5}, 'PROGRAMADA', {6}, {7}, {8})",
                     folio, ciudadano.IdCiudadano, solicitud.IdTramite, solicitud.IdSede, solicitud.FechaHora, solicitud.FechaHora.AddMinutes(30), ip, solicitud.Navegador ?? "Desconocido", solicitud.SistemaOperativo ?? "Desconocido");
 
-                // --- 4. ENVÍO DE CORREO AUTOMÁTICO (AHORA CON AWAIT) ---
                 var tramiteEntity = await _context.Tramites.FindAsync(solicitud.IdTramite);
-
-                // Usamos await para que el proceso no se corte antes de enviar el correo
                 await EnviarCorreoConfirmacion(ciudadano.Correo, ciudadano.Nombre, folio, solicitud.FechaHora, tramiteEntity?.NombreTramite ?? "Trámite General");
 
                 return Ok(new { mensaje = "Cita agendada con éxito", folio = folio });
@@ -139,10 +139,16 @@ namespace RegistroCivilAPI.Controllers
         {
             try
             {
+                // Extraemos las variables seguras desde el appsettings.json
+                string correoOrigen = _config["EmailSettings:Correo"];
+                string passwordApp = _config["EmailSettings:PasswordApp"];
+
+                if (string.IsNullOrEmpty(correoOrigen) || string.IsNullOrEmpty(passwordApp)) return;
+
                 var smtpClient = new SmtpClient("smtp.gmail.com")
                 {
                     Port = 587,
-                    Credentials = new NetworkCredential("javier.egr06@gmail.com", "mcftdklofmniddds"), 
+                    Credentials = new NetworkCredential(correoOrigen, passwordApp),
                     EnableSsl = true,
                 };
 
@@ -165,7 +171,7 @@ namespace RegistroCivilAPI.Controllers
 
                 var mailMessage = new MailMessage
                 {
-                    From = new MailAddress("javier.egr06@gmail.com", "Registro Civil Citas"),
+                    From = new MailAddress(correoOrigen, "Registro Civil Citas"),
                     Subject = $"Confirmación de Cita - Folio: {folio}",
                     Body = mensajeHtml,
                     IsBodyHtml = true,
@@ -176,10 +182,7 @@ namespace RegistroCivilAPI.Controllers
             }
             catch (Exception ex)
             {
-                
-                Console.WriteLine("===================================================");
                 Console.WriteLine("ERROR AL ENVIAR CORREO: " + ex.Message);
-                Console.WriteLine("===================================================");
             }
         }
 
