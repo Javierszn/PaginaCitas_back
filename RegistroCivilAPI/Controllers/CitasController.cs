@@ -16,9 +16,8 @@ namespace RegistroCivilAPI.Controllers
     public class CitasController : ControllerBase
     {
         private readonly RegistroCivilCitasContext _context;
-        private readonly IConfiguration _config; 
+        private readonly IConfiguration _config;
 
-      
         public CitasController(RegistroCivilCitasContext context, IConfiguration config)
         {
             _context = context;
@@ -87,15 +86,19 @@ namespace RegistroCivilAPI.Controllers
                 if (ciudadano == null)
                 {
                     string curpFinal = curpBuscado ?? "ENM" + Guid.NewGuid().ToString("N").Substring(0, 15).ToUpper();
-                    var partesNombre = solicitud.Nombre.Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries);
+
+                    // PREVENCIÓN DE ERROR: Si el nombre viene nulo, lo convertimos en texto vacío antes del Trim()
+                    string nombreSeguro = string.IsNullOrWhiteSpace(solicitud.Nombre) ? "" : solicitud.Nombre.Trim();
+                    var partesNombre = nombreSeguro.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+
                     string origenRegistro = string.IsNullOrWhiteSpace(solicitud.EstadoRegistro) ? solicitud.MunicipioRegistro : $"{solicitud.EstadoRegistro} - {solicitud.MunicipioRegistro}";
                     if (string.IsNullOrWhiteSpace(origenRegistro)) origenRegistro = "MANUAL";
                     if (origenRegistro.Length > 145) origenRegistro = origenRegistro.Substring(0, 145);
 
-                    string nombrePila = partesNombre.Length > 0 ? partesNombre[0] : "Sin Nombre";
+                    string nombrePila = partesNombre.Length > 0 ? partesNombre[0] : "";
                     if (nombrePila.Length > 50) nombrePila = nombrePila.Substring(0, 50);
 
-                    string primerAp = partesNombre.Length > 1 ? partesNombre[1] : "XX";
+                    string primerAp = partesNombre.Length > 1 ? partesNombre[1] : "";
                     if (primerAp.Length > 50) primerAp = primerAp.Substring(0, 50);
 
                     string segundoAp = partesNombre.Length > 2 ? string.Join(" ", partesNombre.Skip(2)) : "";
@@ -124,7 +127,10 @@ namespace RegistroCivilAPI.Controllers
                     folio, ciudadano.IdCiudadano, solicitud.IdTramite, solicitud.IdSede, solicitud.FechaHora, solicitud.FechaHora.AddMinutes(30), ip, solicitud.Navegador ?? "Desconocido", solicitud.SistemaOperativo ?? "Desconocido");
 
                 var tramiteEntity = await _context.Tramites.FindAsync(solicitud.IdTramite);
-                await EnviarCorreoConfirmacion(ciudadano.Correo, ciudadano.Nombre, folio, solicitud.FechaHora, tramiteEntity?.NombreTramite ?? "Trámite General");
+                var sedeEntity = await _context.Sedes.FindAsync(solicitud.IdSede);
+                string nombreSede = sedeEntity?.Nombre ?? "Oficina del Registro Civil";
+
+                await EnviarCorreoConfirmacion(ciudadano.Correo, ciudadano.Nombre, folio, solicitud.FechaHora, tramiteEntity?.NombreTramite ?? "Trámite General", nombreSede);
 
                 return Ok(new { mensaje = "Cita agendada con éxito", folio = folio });
             }
@@ -135,11 +141,10 @@ namespace RegistroCivilAPI.Controllers
             }
         }
 
-        private async Task EnviarCorreoConfirmacion(string correoDestino, string nombre, string folio, DateTime fechaHora, string tramite)
+        private async Task EnviarCorreoConfirmacion(string correoDestino, string nombre, string folio, DateTime fechaHora, string tramite, string sede)
         {
             try
             {
-              
                 string correoOrigen = _config["EmailSettings:Correo"];
                 string passwordApp = _config["EmailSettings:PasswordApp"];
 
@@ -152,22 +157,43 @@ namespace RegistroCivilAPI.Controllers
                     EnableSsl = true,
                 };
 
+                // Si no hay nombre, usamos un saludo genérico
+                string saludoNombre = string.IsNullOrWhiteSpace(nombre) ? "ciudadano/a" : nombre;
+
                 var mensajeHtml = $@"
-                    <div style='font-family: Arial, sans-serif; color: #333; max-width: 600px; margin: 0 auto; border: 1px solid #ddd; border-radius: 10px; overflow: hidden;'>
-                        <div style='background-color: #055A1C; padding: 20px; text-align: center; color: white;'>
-                            <h2>Registro Civil del Estado de San Luis Potosí</h2>
-                        </div>
-                        <div style='padding: 20px;'>
-                            <p>Hola <b>{nombre}</b>,</p>
-                            <p>Su cita ha sido registrada exitosamente en nuestro sistema.</p>
-                            <div style='background-color: #f4f4f4; padding: 15px; border-left: 5px solid #055A1C; margin: 20px 0;'>
-                                <p style='margin: 0;'><b>Trámite:</b> {tramite}</p>
-                                <p style='margin: 10px 0 0 0;'><b>Fecha y Hora:</b> <span style='color: #E60064; font-weight: bold;'>{fechaHora.ToString("dd/MM/yyyy HH:mm")} hrs</span></p>
-                                <h3 style='margin: 15px 0 0 0; color: #055A1C;'>FOLIO: {folio}</h3>
-                            </div>
-                            <p>Le sugerimos llegar 10 minutos antes. Conserve su folio para cualquier aclaración o si desea reagendar su cita en el portal web.</p>
-                        </div>
-                    </div>";
+                <div style='font-family: Arial, sans-serif; padding: 20px; max-width: 600px; margin: 0 auto; border: 1px solid #ddd;'>
+                    
+                    <!-- LOGO DEL REGISTRO CIVIL -->
+                    <div style='text-align: center; margin-bottom: 20px;'>
+                        <img src='http://201.144.103.221/citas/images/aviso.jpg' alt='Logo Registro Civil' style='max-width: 250px;' />
+                    </div>
+
+                    <h2 style='color: #2c3e50; text-align: center;'>Confirmación de Cita Registrada</h2>
+                    
+                    <p>Estimado/a <b>{saludoNombre}</b>,</p>
+                    <p>Su cita ha sido generada exitosamente. A continuación, le presentamos los detalles:</p>
+                    
+                    <div style='background-color: #f9f9f9; padding: 15px; border-radius: 5px;'>
+                        <p><strong>Folio de Cita:</strong> <span style='font-size: 18px; color: #0056b3;'>{folio}</span></p>
+                        <p><strong>Trámite:</strong> {tramite}</p>
+                        <p><strong>Fecha y Hora:</strong> {fechaHora.ToString("dd/MM/yyyy HH:mm")} hrs</p>
+                        <p><strong>Sede:</strong> {sede}</p>
+                    </div>
+
+                    <h3 style='color: #d9534f; margin-top: 30px;'>⚠️ AVISOS IMPORTANTES</h3>
+                    <ul style='color: #555; line-height: 1.6;'>
+                        <li><strong>El trámite es estrictamente personal.</strong> Es obligatorio presentar una Identificación Oficial (ID) vigente en ventanilla.</li>
+                        <li>Presentarse con todos los <strong>requisitos impresos en original o copia certificada</strong> según corresponda a su trámite.</li>
+                        <li>En caso de no poder asistir, le recordamos que <strong>puede cancelar o reprogramar su cita</strong> directamente en el portal web hasta <strong>2 horas antes</strong> de su horario. Liberar su espacio ayuda a otros potosinos.</li>
+                    </ul>
+
+                    <hr style='border: 0; border-top: 1px solid #eee; margin: 30px 0;' />
+                    
+                    <!-- LEYENDA FINAL -->
+                    <p style='font-size: 11px; color: #999; text-align: center;'>
+                        Por favor, <strong>NO conteste este correo.</strong> Este es un mensaje generado automáticamente por el sistema de citas del Registro Civil. Las respuestas a esta dirección no son monitoreadas.
+                    </p>
+                </div>";
 
                 var mailMessage = new MailMessage
                 {
