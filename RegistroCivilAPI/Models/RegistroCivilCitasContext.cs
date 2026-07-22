@@ -150,9 +150,7 @@ public partial class RegistroCivilCitasContext : DbContext
             entity.Property(e => e.IdCategoria).HasColumnName("id_categoria");
             entity.Property(e => e.LimiteDiarioSede).HasColumnName("limite_diario_sede");
             entity.Property(e => e.NombreTramite).HasMaxLength(100).IsUnicode(false).HasColumnName("nombre_tramite");
-            entity.Property(e => e.RequisitosUrl).HasMaxLength(255).IsUnicode(false).HasColumnName("requisitos_url");
             entity.Property(e => e.Requisitos).HasColumnType("varchar(500)").HasColumnName("requisitos");
-            entity.Property(e => e.Activa).HasDefaultValue(true).HasColumnName("activa");
             entity.HasOne(d => d.IdCategoriaNavigation).WithMany(p => p.Tramites)
                 .HasForeignKey(d => d.IdCategoria)
                 .OnDelete(DeleteBehavior.ClientSetNull)
