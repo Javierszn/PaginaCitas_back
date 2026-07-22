@@ -41,7 +41,7 @@ namespace RegistroCivilAPI.Controllers
             var existe = await _context.UsuariosInternos.AnyAsync(u => u.Username == dto.Username);
             if (existe) return BadRequest(new { mensaje = "El nombre de usuario ya existe." });
 
-            // ENCRIPTACIÓN DE CONTRASEÑA NUEVA
+            
             string passwordEncriptada = BCrypt.Net.BCrypt.HashPassword(dto.Password);
 
             var n = new UsuariosInterno
@@ -73,7 +73,7 @@ namespace RegistroCivilAPI.Controllers
             var u = await _context.UsuariosInternos.FindAsync(id);
             if (u == null) return NotFound();
 
-            // ENCRIPTACIÓN DE CONTRASEÑA ACTUALIZADA
+           
             u.PasswordHash = BCrypt.Net.BCrypt.HashPassword(dto.Password);
             u.RequiereCambioPassword = false;
 

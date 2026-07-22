@@ -16,9 +16,9 @@ namespace RegistroCivilAPI.Controllers
     public class CitasController : ControllerBase
     {
         private readonly RegistroCivilCitasContext _context;
-        private readonly IConfiguration _config; // NUEVO: Para leer el appsettings.json
+        private readonly IConfiguration _config; 
 
-        // Inyectamos IConfiguration en el constructor
+      
         public CitasController(RegistroCivilCitasContext context, IConfiguration config)
         {
             _context = context;
@@ -139,7 +139,7 @@ namespace RegistroCivilAPI.Controllers
         {
             try
             {
-                // Extraemos las variables seguras desde el appsettings.json
+              
                 string correoOrigen = _config["EmailSettings:Correo"];
                 string passwordApp = _config["EmailSettings:PasswordApp"];
 

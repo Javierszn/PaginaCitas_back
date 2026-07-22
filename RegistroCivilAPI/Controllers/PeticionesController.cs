@@ -54,7 +54,7 @@ namespace RegistroCivilAPI.Controllers
             var peticiones = new List<object>();
             using (var command = _context.Database.GetDbConnection().CreateCommand())
             {
-                // PROTECCIÓN ANTI-INYECCIÓN SQL APLICADA
+                
                 command.CommandText = "SELECT id_peticion, tipo_peticion, descripcion, estatus, fecha_solicitud, respuesta, leido FROM Peticiones_Soporte WHERE username_solicitante = @username ORDER BY fecha_solicitud DESC";
 
                 var paramUsername = command.CreateParameter();

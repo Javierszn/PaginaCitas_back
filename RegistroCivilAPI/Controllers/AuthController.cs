@@ -19,7 +19,7 @@ namespace RegistroCivilAPI.Controllers
     public class AuthController : ControllerBase
     {
         private readonly RegistroCivilCitasContext _context;
-        private readonly IConfiguration _config; // NUEVO: Para leer el SecretKey
+        private readonly IConfiguration _config;
 
         public AuthController(RegistroCivilCitasContext context, IConfiguration config)
         {
@@ -68,7 +68,7 @@ namespace RegistroCivilAPI.Controllers
                 idAcceso = (int)await cmd.ExecuteScalarAsync();
             }
 
-            // --- NUEVO: GENERACIÓN DEL TOKEN JWT ---
+           
             var tokenString = GenerarTokenJWT(user);
 
             return Ok(new
@@ -81,7 +81,7 @@ namespace RegistroCivilAPI.Controllers
                 sede = user.IdSedeNavigation.Nombre,
                 requiereCambioPassword = user.RequiereCambioPassword ?? true,
                 idAcceso = idAcceso,
-                token = tokenString // MANDAMOS EL GAFETE DIGITAL AL NAVEGADOR
+                token = tokenString 
             });
         }
 
@@ -92,13 +92,13 @@ namespace RegistroCivilAPI.Controllers
             return Ok();
         }
 
-        // --- MÉTODO PARA CREAR EL TOKEN ---
+       
         private string GenerarTokenJWT(UsuariosInterno user)
         {
             var jwtSettings = _config.GetSection("JwtSettings");
             var keyBytes = Encoding.UTF8.GetBytes(jwtSettings["SecretKey"]);
 
-            // Empacamos la información del usuario dentro del gafete
+            
             var claims = new[]
             {
                 new Claim(JwtRegisteredClaimNames.Sub, user.Username),
@@ -114,7 +114,7 @@ namespace RegistroCivilAPI.Controllers
             var tokenDescriptor = new SecurityTokenDescriptor
             {
                 Subject = new ClaimsIdentity(claims),
-                Expires = DateTime.UtcNow.AddHours(8), // El token expira en 8 horas (jornada laboral)
+                Expires = DateTime.UtcNow.AddHours(8),
                 Issuer = jwtSettings["Issuer"],
                 Audience = jwtSettings["Audience"],
                 SigningCredentials = creds
