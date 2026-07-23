@@ -22,6 +22,7 @@ public partial class RegistroCivilCitasContext : DbContext
     public virtual DbSet<Tramite> Tramites { get; set; }
     public virtual DbSet<UsuariosInterno> UsuariosInternos { get; set; }
     public virtual DbSet<AvisoGlobal> AvisosGlobales { get; set; }
+    public virtual DbSet<RegistroAcceso> RegistroAccesos { get; set; }
 
     protected override void OnConfiguring(DbContextOptionsBuilder optionsBuilder)
         => optionsBuilder.UseSqlServer("Server=localhost\\SQLEXPRESS;Database=RegistroCivil_Citas;Trusted_Connection=True;TrustServerCertificate=True;");
@@ -169,6 +170,11 @@ public partial class RegistroCivilCitasContext : DbContext
             entity.Property(e => e.NombreCompleto).HasMaxLength(100).IsUnicode(false).HasColumnName("nombre_completo");
             entity.Property(e => e.PasswordHash).HasMaxLength(255).IsUnicode(false).HasColumnName("password_hash");
             entity.Property(e => e.Username).HasMaxLength(50).IsUnicode(false).HasColumnName("username");
+
+            // MAPEO DEL CAMBIO DE CONTRASEÑA
+            entity.Property(e => e.RequiereCambioPassword).HasColumnName("requiere_cambio_password");
+
+            // RELACIONES RESTAURADAS
             entity.HasOne(d => d.IdRolNavigation).WithMany(p => p.UsuariosInternos)
                 .HasForeignKey(d => d.IdRol)
                 .OnDelete(DeleteBehavior.ClientSetNull)
@@ -179,7 +185,6 @@ public partial class RegistroCivilCitasContext : DbContext
                 .HasConstraintName("FK__Usuarios___id_se__3F466844");
         });
 
-        // MAPEADO DE LA NUEVA TABLA AVISOS GLOBALES CON IMAGEN
         modelBuilder.Entity<AvisoGlobal>(entity =>
         {
             entity.HasKey(e => e.IdAviso).HasName("PK_AvisosGlobales");
@@ -189,6 +194,16 @@ public partial class RegistroCivilCitasContext : DbContext
             entity.Property(e => e.Mensaje).HasColumnType("text").HasColumnName("mensaje");
             entity.Property(e => e.Activo).HasDefaultValue(true).HasColumnName("activo");
             entity.Property(e => e.ImagenUrl).HasMaxLength(500).IsUnicode(false).HasColumnName("imagen_url");
+        });
+
+        modelBuilder.Entity<RegistroAcceso>(entity =>
+        {
+            entity.HasKey(e => e.IdAcceso);
+            entity.ToTable("Registro_Accesos");
+            entity.Property(e => e.IdAcceso).HasColumnName("id_acceso");
+            entity.Property(e => e.Username).HasMaxLength(50).IsUnicode(false).HasColumnName("username");
+            entity.Property(e => e.FechaLogin).HasColumnType("datetime").HasColumnName("fecha_login");
+            entity.Property(e => e.FechaLogout).HasColumnType("datetime").HasColumnName("fecha_logout");
         });
 
         OnModelCreatingPartial(modelBuilder);

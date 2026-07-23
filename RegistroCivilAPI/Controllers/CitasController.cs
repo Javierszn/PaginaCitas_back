@@ -72,7 +72,6 @@ namespace RegistroCivilAPI.Controllers
         }
 
         [HttpPost]
-        [HttpPost]
         public async Task<ActionResult> AgendarCita([FromBody] CitaDTO solicitud)
         {
             try
@@ -80,15 +79,31 @@ namespace RegistroCivilAPI.Controllers
                 Ciudadano ciudadano = null;
                 string curpBuscado = string.IsNullOrWhiteSpace(solicitud.Curp) ? null : solicitud.Curp.Trim().ToUpper();
                 string nombreBuscado = string.IsNullOrWhiteSpace(solicitud.Nombre) ? null : solicitud.Nombre.Trim().ToUpper();
+                string telLimpio = solicitud.Telefono?.Trim();
 
-                if (curpBuscado != null) ciudadano = await _context.Ciudadanos.FirstOrDefaultAsync(c => c.Curp == curpBuscado);
-                else if (nombreBuscado != null) ciudadano = await _context.Ciudadanos.FirstOrDefaultAsync(c => c.Nombre.ToUpper() == nombreBuscado);
+                // 1. SISTEMA ANTI-COYOTES (Match por teléfono)
+                var ciudadanoPorTel = await _context.Ciudadanos.FirstOrDefaultAsync(c => c.Telefono == telLimpio);
+                if (ciudadanoPorTel != null)
+                {
+                    bool coincideCurp = curpBuscado != null && ciudadanoPorTel.Curp == curpBuscado;
+                    bool coincideNombre = nombreBuscado != null && ciudadanoPorTel.Nombre.ToUpper() == nombreBuscado;
+
+                    // Si el teléfono ya existe pero pertenece a alguien más, lo bloqueamos.
+                    if (!coincideCurp && !coincideNombre)
+                    {
+                        return BadRequest(new { mensaje = "Alerta de Seguridad: Este número de teléfono ya se encuentra registrado a nombre de otra persona. No se permiten gestores." });
+                    }
+                    ciudadano = ciudadanoPorTel;
+                }
+                else
+                {
+                    if (curpBuscado != null) ciudadano = await _context.Ciudadanos.FirstOrDefaultAsync(c => c.Curp == curpBuscado);
+                    else if (nombreBuscado != null) ciudadano = await _context.Ciudadanos.FirstOrDefaultAsync(c => c.Nombre.ToUpper() == nombreBuscado);
+                }
 
                 if (ciudadano == null)
                 {
                     string curpFinal = curpBuscado ?? "ENM" + Guid.NewGuid().ToString("N").Substring(0, 15).ToUpper();
-
-                    // PREVENCIÓN DE ERROR: Si el nombre viene nulo, lo convertimos en texto vacío antes del Trim()
                     string nombreSeguro = string.IsNullOrWhiteSpace(solicitud.Nombre) ? "" : solicitud.Nombre.Trim();
                     var partesNombre = nombreSeguro.Split(' ', StringSplitOptions.RemoveEmptyEntries);
 
@@ -96,28 +111,28 @@ namespace RegistroCivilAPI.Controllers
                     if (string.IsNullOrWhiteSpace(origenRegistro)) origenRegistro = "MANUAL";
                     if (origenRegistro.Length > 145) origenRegistro = origenRegistro.Substring(0, 145);
 
-                    string nombrePila = partesNombre.Length > 0 ? partesNombre[0] : "";
-                    if (nombrePila.Length > 50) nombrePila = nombrePila.Substring(0, 50);
-
-                    string primerAp = partesNombre.Length > 1 ? partesNombre[1] : "";
-                    if (primerAp.Length > 50) primerAp = primerAp.Substring(0, 50);
-
-                    string segundoAp = partesNombre.Length > 2 ? string.Join(" ", partesNombre.Skip(2)) : "";
-                    if (segundoAp.Length > 50) segundoAp = segundoAp.Substring(0, 50);
-
-                    string tel = solicitud.Telefono?.Trim();
-                    if (tel != null && tel.Length > 15) tel = tel.Substring(0, 15);
-
-                    string correo = solicitud.Correo?.Trim();
-                    if (correo != null && correo.Length > 100) correo = correo.Substring(0, 100);
-
-                    ciudadano = new Ciudadano { Curp = curpFinal, Nombre = nombrePila, PrimerApellido = primerAp, SegundoApellido = segundoAp, Correo = correo, Telefono = tel, OrigenRegistro = origenRegistro };
+                    ciudadano = new Ciudadano
+                    {
+                        Curp = curpFinal,
+                        Nombre = partesNombre.Length > 0 ? partesNombre[0].Substring(0, Math.Min(partesNombre[0].Length, 50)) : "",
+                        PrimerApellido = partesNombre.Length > 1 ? partesNombre[1].Substring(0, Math.Min(partesNombre[1].Length, 50)) : "",
+                        SegundoApellido = partesNombre.Length > 2 ? string.Join(" ", partesNombre.Skip(2)).Substring(0, Math.Min(string.Join(" ", partesNombre.Skip(2)).Length, 50)) : "",
+                        Correo = solicitud.Correo?.Trim().Substring(0, Math.Min(solicitud.Correo.Trim().Length, 100)),
+                        Telefono = telLimpio.Substring(0, Math.Min(telLimpio.Length, 15)),
+                        OrigenRegistro = origenRegistro
+                    };
                     _context.Ciudadanos.Add(ciudadano);
                     await _context.SaveChangesAsync();
                 }
 
-                var citaMismoTramite = await _context.Citas.AnyAsync(c => c.IdCiudadano == ciudadano.IdCiudadano && c.IdTramite == solicitud.IdTramite && (c.Estatus == "PROGRAMADA" || c.Estatus == "REPROGRAMADA"));
+                // 2. SISTEMA DE PENALIZACIÓN DE 1 SEMANA
+                var penalizado = await _context.Citas.AnyAsync(c => c.IdCiudadano == ciudadano.IdCiudadano && c.Estatus == "NO_ASISTIO" && c.FechaHoraInicio >= DateTime.Now.AddDays(-7));
+                if (penalizado)
+                {
+                    return BadRequest(new { mensaje = "Sistema de Penalización: Usted cuenta con una inasistencia reciente. Por reglamento, podrá agendar nuevas citas al transcurrir 1 semana desde la falta." });
+                }
 
+                var citaMismoTramite = await _context.Citas.AnyAsync(c => c.IdCiudadano == ciudadano.IdCiudadano && c.IdTramite == solicitud.IdTramite && (c.Estatus == "PROGRAMADA" || c.Estatus == "REPROGRAMADA"));
                 if (citaMismoTramite) return BadRequest(new { mensaje = "Alerta: Usted ya tiene una cita programada para este trámite específico. Por favor, seleccione otro servicio." });
 
                 string folio = Guid.NewGuid().ToString().Substring(0, 8);
@@ -130,12 +145,12 @@ namespace RegistroCivilAPI.Controllers
                 var tramiteEntity = await _context.Tramites.FindAsync(solicitud.IdTramite);
                 var sedeEntity = await _context.Sedes.FindAsync(solicitud.IdSede);
                 string nombreSede = sedeEntity?.Nombre ?? "Oficina del Registro Civil";
-
-                // NUEVO: Extraemos los requisitos de la BD
                 string requisitosTramite = tramiteEntity?.Requisitos ?? "Por favor comuníquese a la sede para confirmar los requisitos obligatorios.";
 
-                // PASAMOS LOS REQUISITOS COMO SÉPTIMO PARÁMETRO AL CORREO
-                await EnviarCorreoConfirmacion(ciudadano.Correo, ciudadano.Nombre, folio, solicitud.FechaHora, tramiteEntity?.NombreTramite ?? "Trámite General", nombreSede, requisitosTramite);
+                // CORRECCIÓN: Unimos el nombre completo antes de mandarlo al correo
+                string nombreCompletoParaCorreo = $"{ciudadano.Nombre} {ciudadano.PrimerApellido} {ciudadano.SegundoApellido}".Trim();
+
+                await EnviarCorreoConfirmacion(ciudadano.Correo, nombreCompletoParaCorreo, ciudadano.Curp, folio, solicitud.FechaHora, tramiteEntity?.NombreTramite ?? "Trámite General", tramiteEntity?.Costo ?? 0, nombreSede, requisitosTramite);
 
                 return Ok(new { mensaje = "Cita agendada con éxito", folio = folio });
             }
@@ -146,7 +161,7 @@ namespace RegistroCivilAPI.Controllers
             }
         }
 
-        private async Task EnviarCorreoConfirmacion(string correoDestino, string nombre, string folio, DateTime fechaHora, string tramite, string sede, string requisitos)
+        private async Task EnviarCorreoConfirmacion(string correoDestino, string nombre, string curp, string folio, DateTime fechaHora, string tramite, decimal costo, string sede, string requisitos)
         {
             try
             {
@@ -162,10 +177,15 @@ namespace RegistroCivilAPI.Controllers
                     EnableSsl = true,
                 };
 
-                // Si no hay nombre, usamos un saludo genérico
-                string saludoNombre = string.IsNullOrWhiteSpace(nombre) ? "ciudadano/a" : nombre;
+                // LÓGICA PARA MOSTRAR NOMBRE, CURP O AMBOS
+                string identificador = "";
+                if (!string.IsNullOrWhiteSpace(nombre) && !string.IsNullOrWhiteSpace(curp) && !curp.StartsWith("ENM"))
+                    identificador = $"{nombre} <br><small style='color: #666;'>CURP: {curp}</small>";
+                else if (!string.IsNullOrWhiteSpace(nombre))
+                    identificador = nombre;
+                else
+                    identificador = $"CURP: {curp}";
 
-                // Formatear los requisitos como una lista de HTML limpiando las viñetas si ya las trae
                 string listaRequisitosHtml = "";
                 if (!string.IsNullOrWhiteSpace(requisitos))
                 {
@@ -175,56 +195,44 @@ namespace RegistroCivilAPI.Controllers
                         listaRequisitosHtml += $"<li style='margin-bottom: 8px;'>{linea.Trim('•', ' ', '-')}</li>";
                     }
                 }
-                else
-                {
-                    listaRequisitosHtml = "<li>Comuníquese a la sede para confirmar los requisitos obligatorios.</li>";
-                }
 
                 var mensajeHtml = $@"
                 <div style='font-family: Arial, sans-serif; color: #333; max-width: 600px; margin: 0 auto; border: 1px solid #ddd; border-radius: 8px; overflow: hidden; box-shadow: 0 4px 8px rgba(0,0,0,0.1);'>
                     
-                    <!-- ENCABEZADO CON LOGO OFICIAL -->
-                    <div style='background-color: #ffffff; padding: 20px; text-align: center; border-bottom: 4px solid #055A1C;'>
-                        <img src='https://d3dac9gdq8t83x.cloudfront.net/media/static/images/hor-verde.png' alt='Gobierno del Estado SLP' style='max-height: 55px;' />
-                    </div>
-
-                    <!-- BARRA VERDE INSTITUCIONAL -->
-                    <div style='background-color: #055A1C; padding: 12px; text-align: center; color: white;'>
-                        <h2 style='margin: 0; font-size: 18px; letter-spacing: 0.5px;'>Confirmación de Cita Registrada</h2>
+                    <!-- FLAYER DEL REGISTRO CIVIL -->
+                    <div style='text-align: center; background-color: #ffffff; padding: 0;'>
+                        <img src='http://201.144.103.221/citas/images/Sin_titulo.png' alt='Gobierno del Estado SLP' style='width: 100%; height: auto;' />
                     </div>
                     
                     <div style='padding: 30px 20px;'>
-                        <p style='font-size: 15px; margin-top: 0;'>Estimado/a <b>{saludoNombre}</b>,</p>
+                        <h2 style='color: #055A1C; text-align: center; margin-top: 0;'>Confirmación de Cita Registrada</h2>
+                        <p style='font-size: 15px; margin-top: 20px;'>Estimado/a <b>{identificador}</b>,</p>
                         <p style='font-size: 15px;'>Su cita ha sido generada exitosamente. A continuación, le presentamos los detalles:</p>
                         
-                        <!-- CAJA DE DETALLES DEL TRÁMITE -->
                         <div style='background-color: #f9f9f9; padding: 20px; border-radius: 6px; border-left: 5px solid #055A1C; margin: 25px 0;'>
                             <p style='margin: 0 0 10px 0; font-size: 15px;'><b>Trámite:</b> {tramite}</p>
+                            <p style='margin: 0 0 10px 0; font-size: 15px;'><b>Costo del Servicio:</b> <span style='color: #055A1C; font-weight: bold;'>${costo.ToString("0.00")}</span></p>
                             <p style='margin: 0 0 10px 0; font-size: 15px;'><b>Fecha y Hora:</b> <span style='color: #E60064; font-weight: bold;'>{fechaHora.ToString("dd/MM/yyyy HH:mm")} hrs</span></p>
                             <p style='margin: 0 0 15px 0; font-size: 15px;'><b>Sede:</b> {sede}</p>
                             <h3 style='margin: 0; color: #055A1C; font-size: 20px;'>FOLIO: {folio}</h3>
                         </div>
 
-                        <!-- NUEVA SECCIÓN DE REQUISITOS (JALADOS DE BD) -->
-                        <h4 style='color: #055A1C; margin-top: 30px; margin-bottom: 10px; font-size: 16px;'>REQUISITOS OBLIGATORIOS PARA SU TRÁMITE</h4>
+                        <h4 style='color: #055A1C; margin-top: 30px; margin-bottom: 10px; font-size: 16px;'>📋 REQUISITOS OBLIGATORIOS</h4>
                         <div style='background-color: #fff9e6; padding: 15px 20px; border: 1px dashed #ffc107; border-radius: 6px;'>
                             <ul style='color: #555; line-height: 1.5; font-size: 14px; margin: 0; padding-left: 20px;'>
                                 {listaRequisitosHtml}
                             </ul>
                         </div>
 
-                        <h4 style='color: #E60064; margin-top: 30px; margin-bottom: 10px; font-size: 16px;'>AVISOS IMPORTANTES</h4>
+                        <h4 style='color: #E60064; margin-top: 30px; margin-bottom: 10px; font-size: 16px;'>⚠️ AVISOS IMPORTANTES Y PENALIZACIÓN</h4>
                         <ul style='color: #555; line-height: 1.6; padding-left: 20px; font-size: 14px; margin-top: 0;'>
-                            <li><strong>El trámite es estrictamente personal.</strong> Es obligatorio presentar una Identificación Oficial (ID) vigente en ventanilla.</li>
-                            <li>En caso de no poder asistir, le recordamos que <strong>puede cancelar o reprogramar su cita</strong> directamente en el portal web hasta <strong>2 horas antes</strong> de su horario. Liberar su espacio ayuda a otros potosinos.</li>
+                            <li><strong>El trámite es estrictamente personal.</strong> Es obligatorio presentar Identificación Oficial (ID) vigente.</li>
+                            <li><strong>SISTEMA DE PENALIZACIÓN:</strong> Si usted agenda su cita y NO asiste, el sistema lo bloqueará automáticamente, impidiéndole agendar un nuevo trámite durante <strong>1 semana</strong>.</li>
+                            <li>Si no puede asistir, por favor <strong>cancele o reprograme</strong> en el portal web hasta 2 horas antes de su horario. Liberar su espacio evita sanciones.</li>
                         </ul>
 
                         <hr style='border: 0; border-top: 1px solid #eee; margin: 30px 0;' />
-                        
-                        <!-- LEYENDA FINAL -->
-                        <p style='font-size: 11px; color: #999; text-align: center; margin: 0;'>
-                            Por favor, <strong>NO conteste este correo.</strong> Este es un mensaje generado automáticamente por el sistema de citas del Registro Civil. Las respuestas a esta dirección no son monitoreadas.
-                        </p>
+                        <p style='font-size: 11px; color: #999; text-align: center; margin: 0;'>Por favor, <strong>NO conteste este correo.</strong> Las respuestas a esta dirección no son monitoreadas.</p>
                     </div>
                 </div>";
 
@@ -236,13 +244,9 @@ namespace RegistroCivilAPI.Controllers
                     IsBodyHtml = true,
                 };
                 mailMessage.To.Add(correoDestino);
-
                 await smtpClient.SendMailAsync(mailMessage);
             }
-            catch (Exception ex)
-            {
-                Console.WriteLine("ERROR AL ENVIAR CORREO: " + ex.Message);
-            }
+            catch (System.Exception ex) { System.Console.WriteLine("ERROR AL ENVIAR CORREO: " + ex.Message); }
         }
 
         [HttpGet("{folio}")]
@@ -260,6 +264,7 @@ namespace RegistroCivilAPI.Controllers
                 hora = cita.FechaHoraInicio.ToString("HH:mm"),
                 idTramite = cita.IdTramite,
                 tramite = cita.IdTramiteNavigation.NombreTramite,
+                requisitos = cita.IdTramiteNavigation.Requisitos, // AHORA ENVIAMOS LOS REQUISITOS AL FRONT PARA EL PDF
                 costo = cita.IdTramiteNavigation.Costo,
                 duracion = cita.IdTramiteNavigation.DuracionMinutos,
                 idSede = cita.IdSede,
@@ -328,7 +333,6 @@ namespace RegistroCivilAPI.Controllers
                 navegador = c.Navegador,
                 so = c.SistemaOperativo
             }).ToListAsync();
-
             return Ok(citas);
         }
 
@@ -357,77 +361,6 @@ namespace RegistroCivilAPI.Controllers
         public string Nombre { get; set; }
         public string Correo { get; set; }
         public string Telefono { get; set; }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
         public string MunicipioRegistro { get; set; }
         public string EstadoRegistro { get; set; }
         public int IdTramite { get; set; }

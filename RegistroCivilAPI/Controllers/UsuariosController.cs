@@ -4,159 +4,136 @@ using RegistroCivilAPI.Models;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
-using Microsoft.AspNetCore.Authorization;
 
 namespace RegistroCivilAPI.Controllers
 {
-    [Authorize]
     [Route("api/[controller]")]
     [ApiController]
     public class UsuariosController : ControllerBase
     {
         private readonly RegistroCivilCitasContext _context;
-        public UsuariosController(RegistroCivilCitasContext context) { _context = context; }
+
+        public UsuariosController(RegistroCivilCitasContext context)
+        {
+            _context = context;
+        }
 
         [HttpGet]
-        public async Task<ActionResult> GetUsuarios()
+        public async Task<ActionResult<IEnumerable<object>>> GetUsuarios()
         {
-            var users = await _context.UsuariosInternos
+            return await _context.UsuariosInternos
                 .Include(u => u.IdRolNavigation)
                 .Include(u => u.IdSedeNavigation)
-                .Select(u => new {
+                .Select(u => new
+                {
                     u.IdUsuario,
                     u.Username,
                     u.NombreCompleto,
-                    u.IdRol,
-                    Rol = u.IdRolNavigation.NombreRol,
+                    u.Activo,
                     u.IdSede,
-                    Sede = u.IdSedeNavigation.Nombre,
-                    u.Activo
+                    Rol = u.IdRolNavigation.NombreRol,
+                    Sede = u.IdSedeNavigation.Nombre
                 }).ToListAsync();
-            return Ok(users);
         }
 
         [HttpPost]
-        public async Task<ActionResult> CreateUsuario([FromBody] NuevoUsuarioDTO dto)
+        public async Task<ActionResult> CrearUsuario([FromBody] NuevoUsuarioDTO dto)
         {
-            var existe = await _context.UsuariosInternos.AnyAsync(u => u.Username == dto.Username);
-            if (existe) return BadRequest(new { mensaje = "El nombre de usuario ya existe." });
+            if (await _context.UsuariosInternos.AnyAsync(u => u.Username == dto.Username))
+                return BadRequest(new { mensaje = "El nombre de usuario ya existe." });
 
-            
-            string passwordEncriptada = BCrypt.Net.BCrypt.HashPassword(dto.Password);
-
-            var n = new UsuariosInterno
+            var usr = new UsuariosInterno
             {
                 Username = dto.Username,
-                PasswordHash = passwordEncriptada,
                 NombreCompleto = dto.NombreCompleto,
+                PasswordHash = BCrypt.Net.BCrypt.HashPassword(dto.Password),
                 IdRol = dto.IdRol,
                 IdSede = dto.IdSede,
                 Activo = true,
                 RequiereCambioPassword = true
             };
-            _context.UsuariosInternos.Add(n);
+
+            _context.UsuariosInternos.Add(usr);
             await _context.SaveChangesAsync();
-            return Ok(new { mensaje = "Usuario creado con contraseña encriptada." });
+
+            return Ok(new { mensaje = "Usuario creado exitosamente." });
         }
 
         [HttpPut("{id}/estado")]
         public async Task<ActionResult> ToggleEstado(int id)
         {
-            var u = await _context.UsuariosInternos.FindAsync(id);
-            if (u == null) return NotFound();
-            u.Activo = !u.Activo; await _context.SaveChangesAsync(); return Ok(new { mensaje = "Estado de usuario actualizado." });
+            var usr = await _context.UsuariosInternos.FindAsync(id);
+            if (usr == null) return NotFound();
+
+            usr.Activo = !usr.Activo;
+            await _context.SaveChangesAsync();
+            return Ok();
         }
 
         [HttpPut("{id}/password")]
-        public async Task<ActionResult> UpdatePassword(int id, [FromBody] PasswordDTO dto)
+        public async Task<ActionResult> CambiarPassword(int id, [FromBody] PasswordDTO dto)
         {
-            var u = await _context.UsuariosInternos.FindAsync(id);
-            if (u == null) return NotFound();
+            var usr = await _context.UsuariosInternos.FindAsync(id);
+            if (usr == null) return NotFound(new { mensaje = "Usuario no encontrado." });
 
-           
-            u.PasswordHash = BCrypt.Net.BCrypt.HashPassword(dto.Password);
-            u.RequiereCambioPassword = false;
+            usr.PasswordHash = BCrypt.Net.BCrypt.HashPassword(dto.Password);
+            usr.RequiereCambioPassword = false; // ESTA ES LA LÍNEA QUE ARREGLA EL BUG
 
             await _context.SaveChangesAsync();
-            return Ok(new { mensaje = "Contraseña actualizada y encriptada exitosamente." });
+            return Ok(new { mensaje = "Contraseña actualizada correctamente." });
         }
 
         [HttpPut("{id}/sede")]
-        public async Task<ActionResult> UpdateSede(int id, [FromBody] SedeUpdateDTO dto)
+        public async Task<ActionResult> CambiarSede(int id, [FromBody] SedeDTO dto)
         {
-            var u = await _context.UsuariosInternos.FindAsync(id);
-            if (u == null) return NotFound(new { mensaje = "Usuario no encontrado." });
+            var usr = await _context.UsuariosInternos.FindAsync(id);
+            if (usr == null) return NotFound();
 
-            u.IdSede = dto.IdSede;
+            usr.IdSede = dto.IdSede;
             await _context.SaveChangesAsync();
-            return Ok(new { mensaje = "La sucursal del empleado fue actualizada correctamente." });
+            return Ok(new { mensaje = "Sede actualizada." });
         }
 
         [HttpGet("Soporte")]
         public async Task<ActionResult> GetUsuariosSoporte()
         {
-            var users = await _context.UsuariosInternos.Where(u => u.Activo == true).Select(u => new { u.Username, u.NombreCompleto }).ToListAsync();
-            return Ok(users);
+            var usuarios = await _context.UsuariosInternos
+                .Select(u => new { u.Username, u.NombreCompleto })
+                .ToListAsync();
+            return Ok(usuarios);
         }
 
         [HttpGet("Accesos")]
-        public async Task<ActionResult> GetAccesos([FromQuery] string? fecha = null, [FromQuery] string? busqueda = null, [FromQuery] int page = 1, [FromQuery] int pageSize = 10)
+        public async Task<ActionResult> GetAccesos([FromQuery] int page = 1, [FromQuery] int pageSize = 10, [FromQuery] string? fecha = null, [FromQuery] string? busqueda = null)
         {
-            var accesos = new List<object>();
-            int totalRegistros = 0;
-            int offset = (page - 1) * pageSize;
+            var query = _context.RegistroAccesos.AsQueryable();
 
-            using (var cmd = _context.Database.GetDbConnection().CreateCommand())
+            if (!string.IsNullOrWhiteSpace(busqueda))
             {
-                string filterQuery = " WHERE 1=1";
-
-                if (!string.IsNullOrWhiteSpace(busqueda))
-                {
-                    filterQuery += " AND (username LIKE @busqueda OR CAST(id_acceso AS VARCHAR) LIKE @busqueda)";
-                    var paramBusqueda = cmd.CreateParameter();
-                    paramBusqueda.ParameterName = "@busqueda";
-                    paramBusqueda.Value = $"%{busqueda}%";
-                    cmd.Parameters.Add(paramBusqueda);
-                }
-                else if (!string.IsNullOrWhiteSpace(fecha))
-                {
-                    if (System.DateTime.TryParse(fecha, out System.DateTime fechaFiltro))
-                    {
-                        filterQuery += " AND CAST(fecha_login AS DATE) = @fecha";
-                        var paramFecha = cmd.CreateParameter();
-                        paramFecha.ParameterName = "@fecha";
-                        paramFecha.Value = fechaFiltro.ToString("yyyy-MM-dd");
-                        cmd.Parameters.Add(paramFecha);
-                    }
-                }
-
-                cmd.CommandText = "SELECT COUNT(*) FROM Registro_Accesos" + filterQuery;
-                await _context.Database.OpenConnectionAsync();
-                totalRegistros = (int)await cmd.ExecuteScalarAsync();
-
-                cmd.CommandText = $"SELECT id_acceso, username, fecha_login, fecha_logout FROM Registro_Accesos {filterQuery} ORDER BY fecha_login DESC OFFSET {offset} ROWS FETCH NEXT {pageSize} ROWS ONLY";
-
-                using (var reader = await cmd.ExecuteReaderAsync())
-                {
-                    while (await reader.ReadAsync())
-                    {
-                        accesos.Add(new
-                        {
-                            idAcceso = reader.GetInt32(0),
-                            username = reader.GetString(1),
-                            fechaLogin = reader.GetDateTime(2),
-                            fechaLogout = reader.IsDBNull(3) ? (System.DateTime?)null : reader.GetDateTime(3)
-                        });
-                    }
-                }
+                query = query.Where(a => a.Username.Contains(busqueda) || a.IdAcceso.ToString() == busqueda);
+            }
+            else if (!string.IsNullOrWhiteSpace(fecha) && System.DateTime.TryParse(fecha, out System.DateTime parsedDate))
+            {
+                query = query.Where(a => a.FechaLogin.HasValue && a.FechaLogin.Value.Date == parsedDate.Date);
             }
 
-            int totalPaginas = (int)System.Math.Ceiling((double)totalRegistros / pageSize);
-            return Ok(new { Datos = accesos, PaginaActual = page, TotalPaginas = totalPaginas, TotalRegistros = totalRegistros });
+            int total = await query.CountAsync();
+            var accesos = await query.OrderByDescending(a => a.FechaLogin)
+                                     .Skip((page - 1) * pageSize)
+                                     .Take(pageSize)
+                                     .ToListAsync();
+
+            return Ok(new
+            {
+                TotalRegistros = total,
+                PaginaActual = page,
+                TotalPaginas = (int)System.Math.Ceiling((double)total / pageSize),
+                Datos = accesos
+            });
         }
     }
 
     public class NuevoUsuarioDTO { public string Username { get; set; } public string Password { get; set; } public string NombreCompleto { get; set; } public int IdRol { get; set; } public int IdSede { get; set; } }
     public class PasswordDTO { public string Password { get; set; } }
-    public class SedeUpdateDTO { public int IdSede { get; set; } }
+    public class SedeDTO { public int IdSede { get; set; } }
 }
