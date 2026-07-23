@@ -72,6 +72,7 @@ namespace RegistroCivilAPI.Controllers
         }
 
         [HttpPost]
+        [HttpPost]
         public async Task<ActionResult> AgendarCita([FromBody] CitaDTO solicitud)
         {
             try
@@ -130,7 +131,11 @@ namespace RegistroCivilAPI.Controllers
                 var sedeEntity = await _context.Sedes.FindAsync(solicitud.IdSede);
                 string nombreSede = sedeEntity?.Nombre ?? "Oficina del Registro Civil";
 
-                await EnviarCorreoConfirmacion(ciudadano.Correo, ciudadano.Nombre, folio, solicitud.FechaHora, tramiteEntity?.NombreTramite ?? "Trámite General", nombreSede);
+                // NUEVO: Extraemos los requisitos de la BD
+                string requisitosTramite = tramiteEntity?.Requisitos ?? "Por favor comuníquese a la sede para confirmar los requisitos obligatorios.";
+
+                // PASAMOS LOS REQUISITOS COMO SÉPTIMO PARÁMETRO AL CORREO
+                await EnviarCorreoConfirmacion(ciudadano.Correo, ciudadano.Nombre, folio, solicitud.FechaHora, tramiteEntity?.NombreTramite ?? "Trámite General", nombreSede, requisitosTramite);
 
                 return Ok(new { mensaje = "Cita agendada con éxito", folio = folio });
             }
@@ -141,7 +146,7 @@ namespace RegistroCivilAPI.Controllers
             }
         }
 
-        private async Task EnviarCorreoConfirmacion(string correoDestino, string nombre, string folio, DateTime fechaHora, string tramite, string sede)
+        private async Task EnviarCorreoConfirmacion(string correoDestino, string nombre, string folio, DateTime fechaHora, string tramite, string sede, string requisitos)
         {
             try
             {
@@ -160,39 +165,67 @@ namespace RegistroCivilAPI.Controllers
                 // Si no hay nombre, usamos un saludo genérico
                 string saludoNombre = string.IsNullOrWhiteSpace(nombre) ? "ciudadano/a" : nombre;
 
+                // Formatear los requisitos como una lista de HTML limpiando las viñetas si ya las trae
+                string listaRequisitosHtml = "";
+                if (!string.IsNullOrWhiteSpace(requisitos))
+                {
+                    var lineas = requisitos.Split(new[] { '\n', '\r' }, StringSplitOptions.RemoveEmptyEntries);
+                    foreach (var linea in lineas)
+                    {
+                        listaRequisitosHtml += $"<li style='margin-bottom: 8px;'>{linea.Trim('•', ' ', '-')}</li>";
+                    }
+                }
+                else
+                {
+                    listaRequisitosHtml = "<li>Comuníquese a la sede para confirmar los requisitos obligatorios.</li>";
+                }
+
                 var mensajeHtml = $@"
-                <div style='font-family: Arial, sans-serif; padding: 20px; max-width: 600px; margin: 0 auto; border: 1px solid #ddd;'>
+                <div style='font-family: Arial, sans-serif; color: #333; max-width: 600px; margin: 0 auto; border: 1px solid #ddd; border-radius: 8px; overflow: hidden; box-shadow: 0 4px 8px rgba(0,0,0,0.1);'>
                     
-                    <!-- LOGO DEL REGISTRO CIVIL -->
-                    <div style='text-align: center; margin-bottom: 20px;'>
-                        <img src='http://201.144.103.221/citas/images/aviso.jpg' alt='Logo Registro Civil' style='max-width: 250px;' />
+                    <!-- ENCABEZADO CON LOGO OFICIAL -->
+                    <div style='background-color: #ffffff; padding: 20px; text-align: center; border-bottom: 4px solid #055A1C;'>
+                        <img src='https://d3dac9gdq8t83x.cloudfront.net/media/static/images/hor-verde.png' alt='Gobierno del Estado SLP' style='max-height: 55px;' />
                     </div>
 
-                    <h2 style='color: #2c3e50; text-align: center;'>Confirmación de Cita Registrada</h2>
-                    
-                    <p>Estimado/a <b>{saludoNombre}</b>,</p>
-                    <p>Su cita ha sido generada exitosamente. A continuación, le presentamos los detalles:</p>
-                    
-                    <div style='background-color: #f9f9f9; padding: 15px; border-radius: 5px;'>
-                        <p><strong>Folio de Cita:</strong> <span style='font-size: 18px; color: #0056b3;'>{folio}</span></p>
-                        <p><strong>Trámite:</strong> {tramite}</p>
-                        <p><strong>Fecha y Hora:</strong> {fechaHora.ToString("dd/MM/yyyy HH:mm")} hrs</p>
-                        <p><strong>Sede:</strong> {sede}</p>
+                    <!-- BARRA VERDE INSTITUCIONAL -->
+                    <div style='background-color: #055A1C; padding: 12px; text-align: center; color: white;'>
+                        <h2 style='margin: 0; font-size: 18px; letter-spacing: 0.5px;'>Confirmación de Cita Registrada</h2>
                     </div>
-
-                    <h3 style='color: #d9534f; margin-top: 30px;'>⚠️ AVISOS IMPORTANTES</h3>
-                    <ul style='color: #555; line-height: 1.6;'>
-                        <li><strong>El trámite es estrictamente personal.</strong> Es obligatorio presentar una Identificación Oficial (ID) vigente en ventanilla.</li>
-                        <li>Presentarse con todos los <strong>requisitos impresos en original o copia certificada</strong> según corresponda a su trámite.</li>
-                        <li>En caso de no poder asistir, le recordamos que <strong>puede cancelar o reprogramar su cita</strong> directamente en el portal web hasta <strong>2 horas antes</strong> de su horario. Liberar su espacio ayuda a otros potosinos.</li>
-                    </ul>
-
-                    <hr style='border: 0; border-top: 1px solid #eee; margin: 30px 0;' />
                     
-                    <!-- LEYENDA FINAL -->
-                    <p style='font-size: 11px; color: #999; text-align: center;'>
-                        Por favor, <strong>NO conteste este correo.</strong> Este es un mensaje generado automáticamente por el sistema de citas del Registro Civil. Las respuestas a esta dirección no son monitoreadas.
-                    </p>
+                    <div style='padding: 30px 20px;'>
+                        <p style='font-size: 15px; margin-top: 0;'>Estimado/a <b>{saludoNombre}</b>,</p>
+                        <p style='font-size: 15px;'>Su cita ha sido generada exitosamente. A continuación, le presentamos los detalles:</p>
+                        
+                        <!-- CAJA DE DETALLES DEL TRÁMITE -->
+                        <div style='background-color: #f9f9f9; padding: 20px; border-radius: 6px; border-left: 5px solid #055A1C; margin: 25px 0;'>
+                            <p style='margin: 0 0 10px 0; font-size: 15px;'><b>Trámite:</b> {tramite}</p>
+                            <p style='margin: 0 0 10px 0; font-size: 15px;'><b>Fecha y Hora:</b> <span style='color: #E60064; font-weight: bold;'>{fechaHora.ToString("dd/MM/yyyy HH:mm")} hrs</span></p>
+                            <p style='margin: 0 0 15px 0; font-size: 15px;'><b>Sede:</b> {sede}</p>
+                            <h3 style='margin: 0; color: #055A1C; font-size: 20px;'>FOLIO: {folio}</h3>
+                        </div>
+
+                        <!-- NUEVA SECCIÓN DE REQUISITOS (JALADOS DE BD) -->
+                        <h4 style='color: #055A1C; margin-top: 30px; margin-bottom: 10px; font-size: 16px;'>REQUISITOS OBLIGATORIOS PARA SU TRÁMITE</h4>
+                        <div style='background-color: #fff9e6; padding: 15px 20px; border: 1px dashed #ffc107; border-radius: 6px;'>
+                            <ul style='color: #555; line-height: 1.5; font-size: 14px; margin: 0; padding-left: 20px;'>
+                                {listaRequisitosHtml}
+                            </ul>
+                        </div>
+
+                        <h4 style='color: #E60064; margin-top: 30px; margin-bottom: 10px; font-size: 16px;'>AVISOS IMPORTANTES</h4>
+                        <ul style='color: #555; line-height: 1.6; padding-left: 20px; font-size: 14px; margin-top: 0;'>
+                            <li><strong>El trámite es estrictamente personal.</strong> Es obligatorio presentar una Identificación Oficial (ID) vigente en ventanilla.</li>
+                            <li>En caso de no poder asistir, le recordamos que <strong>puede cancelar o reprogramar su cita</strong> directamente en el portal web hasta <strong>2 horas antes</strong> de su horario. Liberar su espacio ayuda a otros potosinos.</li>
+                        </ul>
+
+                        <hr style='border: 0; border-top: 1px solid #eee; margin: 30px 0;' />
+                        
+                        <!-- LEYENDA FINAL -->
+                        <p style='font-size: 11px; color: #999; text-align: center; margin: 0;'>
+                            Por favor, <strong>NO conteste este correo.</strong> Este es un mensaje generado automáticamente por el sistema de citas del Registro Civil. Las respuestas a esta dirección no son monitoreadas.
+                        </p>
+                    </div>
                 </div>";
 
                 var mailMessage = new MailMessage
@@ -324,6 +357,77 @@ namespace RegistroCivilAPI.Controllers
         public string Nombre { get; set; }
         public string Correo { get; set; }
         public string Telefono { get; set; }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
         public string MunicipioRegistro { get; set; }
         public string EstadoRegistro { get; set; }
         public int IdTramite { get; set; }
