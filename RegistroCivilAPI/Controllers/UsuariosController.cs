@@ -131,7 +131,34 @@ namespace RegistroCivilAPI.Controllers
                 Datos = accesos
             });
         }
+        [HttpPut("Accesos/{idAcceso}/cerrar")]
+        public async Task<ActionResult> CerrarSesionRemota(int idAcceso)
+        {
+            var acceso = await _context.RegistroAccesos.FindAsync(idAcceso);
+            if (acceso == null) return NotFound(new { mensaje = "Registro no encontrado." });
+            if (acceso.FechaLogout != null) return BadRequest(new { mensaje = "La sesión ya se encontraba cerrada." });
+
+            acceso.FechaLogout = DateTime.Now;
+            await _context.SaveChangesAsync();
+            return Ok(new { mensaje = "Sesión cerrada remotamente de forma exitosa." });
+        }
+        [HttpGet("EstadoSesion/{username}")]
+        public async Task<ActionResult> VerificarEstadoSesionUsuario(string username)
+        {
+            // Busca el acceso más reciente de este usuario
+            var ultimoAcceso = await _context.RegistroAccesos
+                .Where(a => a.Username == username)
+                .OrderByDescending(a => a.FechaLogin)
+                .FirstOrDefaultAsync();
+
+            // Si no tiene accesos o el último ya tiene fecha de cierre, lo botamos
+            if (ultimoAcceso == null || ultimoAcceso.FechaLogout != null)
+                return Ok(new { activa = false });
+
+            return Ok(new { activa = true });
+        }
     }
+
 
     public class NuevoUsuarioDTO { public string Username { get; set; } public string Password { get; set; } public string NombreCompleto { get; set; } public int IdRol { get; set; } public int IdSede { get; set; } }
     public class PasswordDTO { public string Password { get; set; } }

@@ -81,24 +81,25 @@ namespace RegistroCivilAPI.Controllers
                 string nombreBuscado = string.IsNullOrWhiteSpace(solicitud.Nombre) ? null : solicitud.Nombre.Trim().ToUpper();
                 string telLimpio = solicitud.Telefono?.Trim();
 
-                // 1. SISTEMA ANTI-COYOTES (Match por teléfono)
-                var ciudadanoPorTel = await _context.Ciudadanos.FirstOrDefaultAsync(c => c.Telefono == telLimpio);
-                if (ciudadanoPorTel != null)
+                // 1. SISTEMA ANTI-COYOTES (Match por teléfono SOLO SI HAY NOMBRE)
+                if (!string.IsNullOrWhiteSpace(nombreBuscado))
                 {
-                    bool coincideCurp = curpBuscado != null && ciudadanoPorTel.Curp == curpBuscado;
-                    bool coincideNombre = nombreBuscado != null && ciudadanoPorTel.Nombre.ToUpper() == nombreBuscado;
-
-                    // Si el teléfono ya existe pero pertenece a alguien más, lo bloqueamos.
-                    if (!coincideCurp && !coincideNombre)
+                    var usuarioConMismoTel = await _context.Ciudadanos.FirstOrDefaultAsync(c => c.Telefono == telLimpio);
+                    if (usuarioConMismoTel != null && usuarioConMismoTel.Nombre.ToUpper() != nombreBuscado)
                     {
-                        return BadRequest(new { mensaje = "Alerta de Seguridad: Este número de teléfono ya se encuentra registrado a nombre de otra persona. No se permiten gestores." });
+                        return BadRequest(new { mensaje = "Alerta de Seguridad: Este número de teléfono ya está registrado a nombre de otra persona. No se permiten gestores." });
                     }
-                    ciudadano = ciudadanoPorTel;
                 }
-                else
+
+                // 2. BUSCAR CIUDADANO (Prioridad a CURP)
+                if (!string.IsNullOrWhiteSpace(curpBuscado))
                 {
-                    if (curpBuscado != null) ciudadano = await _context.Ciudadanos.FirstOrDefaultAsync(c => c.Curp == curpBuscado);
-                    else if (nombreBuscado != null) ciudadano = await _context.Ciudadanos.FirstOrDefaultAsync(c => c.Nombre.ToUpper() == nombreBuscado);
+                    ciudadano = await _context.Ciudadanos.FirstOrDefaultAsync(c => c.Curp == curpBuscado);
+                }
+
+                if (ciudadano == null && !string.IsNullOrWhiteSpace(nombreBuscado))
+                {
+                    ciudadano = await _context.Ciudadanos.FirstOrDefaultAsync(c => c.Nombre.ToUpper() == nombreBuscado && c.Telefono == telLimpio);
                 }
 
                 if (ciudadano == null)
@@ -125,15 +126,21 @@ namespace RegistroCivilAPI.Controllers
                     await _context.SaveChangesAsync();
                 }
 
-                // 2. SISTEMA DE PENALIZACIÓN DE 1 SEMANA
+                // 3. SISTEMA DE PENALIZACIÓN DE 1 SEMANA
                 var penalizado = await _context.Citas.AnyAsync(c => c.IdCiudadano == ciudadano.IdCiudadano && c.Estatus == "NO_ASISTIO" && c.FechaHoraInicio >= DateTime.Now.AddDays(-7));
                 if (penalizado)
                 {
                     return BadRequest(new { mensaje = "Sistema de Penalización: Usted cuenta con una inasistencia reciente. Por reglamento, podrá agendar nuevas citas al transcurrir 1 semana desde la falta." });
                 }
 
-                var citaMismoTramite = await _context.Citas.AnyAsync(c => c.IdCiudadano == ciudadano.IdCiudadano && c.IdTramite == solicitud.IdTramite && (c.Estatus == "PROGRAMADA" || c.Estatus == "REPROGRAMADA"));
-                if (citaMismoTramite) return BadRequest(new { mensaje = "Alerta: Usted ya tiene una cita programada para este trámite específico. Por favor, seleccione otro servicio." });
+                // 4. PREVENIR EL MISMO TRÁMITE EL MISMO DÍA (Diferentes trámites el mismo día SÍ pasan)
+                var citaMismoTramite = await _context.Citas.AnyAsync(c =>
+                    c.IdCiudadano == ciudadano.IdCiudadano &&
+                    c.IdTramite == solicitud.IdTramite &&
+                    c.FechaHoraInicio.Date == solicitud.FechaHora.Date &&
+                    (c.Estatus == "PROGRAMADA" || c.Estatus == "REPROGRAMADA"));
+
+                if (citaMismoTramite) return BadRequest(new { mensaje = "Alerta: Usted ya tiene una cita programada para este trámite exacto en este día." });
 
                 string folio = Guid.NewGuid().ToString().Substring(0, 8);
                 string ip = HttpContext.Connection.RemoteIpAddress?.ToString() ?? "Desconocida";
@@ -147,10 +154,11 @@ namespace RegistroCivilAPI.Controllers
                 string nombreSede = sedeEntity?.Nombre ?? "Oficina del Registro Civil";
                 string requisitosTramite = tramiteEntity?.Requisitos ?? "Por favor comuníquese a la sede para confirmar los requisitos obligatorios.";
 
-                // CORRECCIÓN: Unimos el nombre completo antes de mandarlo al correo
-                string nombreCompletoParaCorreo = $"{ciudadano.Nombre} {ciudadano.PrimerApellido} {ciudadano.SegundoApellido}".Trim();
+                // LÓGICA: O NOMBRE O CURP
+                string nombreCompleto = $"{ciudadano.Nombre} {ciudadano.PrimerApellido} {ciudadano.SegundoApellido}".Trim();
+                string identificadorParaCorreo = !string.IsNullOrWhiteSpace(nombreCompleto) ? nombreCompleto : $"CURP: {ciudadano.Curp}";
 
-                await EnviarCorreoConfirmacion(ciudadano.Correo, nombreCompletoParaCorreo, ciudadano.Curp, folio, solicitud.FechaHora, tramiteEntity?.NombreTramite ?? "Trámite General", tramiteEntity?.Costo ?? 0, nombreSede, requisitosTramite);
+                await EnviarCorreoConfirmacion(ciudadano.Correo, identificadorParaCorreo, folio, solicitud.FechaHora, tramiteEntity?.NombreTramite ?? "Trámite General", tramiteEntity?.Costo ?? 0, nombreSede, requisitosTramite);
 
                 return Ok(new { mensaje = "Cita agendada con éxito", folio = folio });
             }
@@ -161,7 +169,7 @@ namespace RegistroCivilAPI.Controllers
             }
         }
 
-        private async Task EnviarCorreoConfirmacion(string correoDestino, string nombre, string curp, string folio, DateTime fechaHora, string tramite, decimal costo, string sede, string requisitos)
+        private async Task EnviarCorreoConfirmacion(string correoDestino, string identificador, string folio, DateTime fechaHora, string tramite, decimal costo, string sede, string requisitos)
         {
             try
             {
@@ -176,15 +184,6 @@ namespace RegistroCivilAPI.Controllers
                     Credentials = new NetworkCredential(correoOrigen, passwordApp),
                     EnableSsl = true,
                 };
-
-                // LÓGICA PARA MOSTRAR NOMBRE, CURP O AMBOS
-                string identificador = "";
-                if (!string.IsNullOrWhiteSpace(nombre) && !string.IsNullOrWhiteSpace(curp) && !curp.StartsWith("ENM"))
-                    identificador = $"{nombre} <br><small style='color: #666;'>CURP: {curp}</small>";
-                else if (!string.IsNullOrWhiteSpace(nombre))
-                    identificador = nombre;
-                else
-                    identificador = $"CURP: {curp}";
 
                 string listaRequisitosHtml = "";
                 if (!string.IsNullOrWhiteSpace(requisitos))
@@ -264,7 +263,7 @@ namespace RegistroCivilAPI.Controllers
                 hora = cita.FechaHoraInicio.ToString("HH:mm"),
                 idTramite = cita.IdTramite,
                 tramite = cita.IdTramiteNavigation.NombreTramite,
-                requisitos = cita.IdTramiteNavigation.Requisitos, // AHORA ENVIAMOS LOS REQUISITOS AL FRONT PARA EL PDF
+                requisitos = cita.IdTramiteNavigation.Requisitos,
                 costo = cita.IdTramiteNavigation.Costo,
                 duracion = cita.IdTramiteNavigation.DuracionMinutos,
                 idSede = cita.IdSede,
