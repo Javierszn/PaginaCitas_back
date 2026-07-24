@@ -169,7 +169,8 @@ namespace RegistroCivilAPI.Controllers
             }
         }
 
-        private async Task EnviarCorreoConfirmacion(string correoDestino, string identificador, string folio, DateTime fechaHora, string tramite, decimal costo, string sede, string requisitos)
+        // Modificación: Agregamos la bandera "esReagendada" al final de los parámetros
+        private async Task EnviarCorreoConfirmacion(string correoDestino, string identificador, string folio, DateTime fechaHora, string tramite, decimal costo, string sede, string requisitos, bool esReagendada = false)
         {
             try
             {
@@ -189,29 +190,27 @@ namespace RegistroCivilAPI.Controllers
                 if (!string.IsNullOrWhiteSpace(requisitos))
                 {
                     var lineas = requisitos.Split(new[] { '\n', '\r' }, StringSplitOptions.RemoveEmptyEntries);
-                    foreach (var linea in lineas)
-                    {
-                        listaRequisitosHtml += $"<li style='margin-bottom: 8px;'>{linea.Trim('•', ' ', '-')}</li>";
-                    }
+                    foreach (var linea in lineas) { listaRequisitosHtml += $"<li style='margin-bottom: 8px;'>{linea.Trim('•', ' ', '-')}</li>"; }
                 }
+
+                // Títulos dinámicos según el tipo de correo
+                string tituloPrincipal = esReagendada ? "Confirmación de Cita Reagendada" : "Confirmación de Cita Registrada";
+                string textoSecundario = esReagendada ? "Su cita ha sido reagendada exitosamente para una nueva fecha." : "Su cita ha sido generada exitosamente.";
 
                 var mensajeHtml = $@"
                 <div style='font-family: Arial, sans-serif; color: #333; max-width: 600px; margin: 0 auto; border: 1px solid #ddd; border-radius: 8px; overflow: hidden; box-shadow: 0 4px 8px rgba(0,0,0,0.1);'>
-                    
-                    <!-- FLAYER DEL REGISTRO CIVIL -->
                     <div style='text-align: center; background-color: #ffffff; padding: 0;'>
                         <img src='http://201.144.103.221/citas/images/Sin_titulo.png' alt='Gobierno del Estado SLP' style='width: 100%; height: auto;' />
                     </div>
-                    
                     <div style='padding: 30px 20px;'>
-                        <h2 style='color: #055A1C; text-align: center; margin-top: 0;'>Confirmación de Cita Registrada</h2>
+                        <h2 style='color: #055A1C; text-align: center; margin-top: 0;'>{tituloPrincipal}</h2>
                         <p style='font-size: 15px; margin-top: 20px;'>Estimado/a <b>{identificador}</b>,</p>
-                        <p style='font-size: 15px;'>Su cita ha sido generada exitosamente. A continuación, le presentamos los detalles:</p>
+                        <p style='font-size: 15px;'>{textoSecundario} A continuación, le presentamos los detalles:</p>
                         
                         <div style='background-color: #f9f9f9; padding: 20px; border-radius: 6px; border-left: 5px solid #055A1C; margin: 25px 0;'>
                             <p style='margin: 0 0 10px 0; font-size: 15px;'><b>Trámite:</b> {tramite}</p>
                             <p style='margin: 0 0 10px 0; font-size: 15px;'><b>Costo del Servicio:</b> <span style='color: #055A1C; font-weight: bold;'>${costo.ToString("0.00")}</span></p>
-                            <p style='margin: 0 0 10px 0; font-size: 15px;'><b>Fecha y Hora:</b> <span style='color: #E60064; font-weight: bold;'>{fechaHora.ToString("dd/MM/yyyy HH:mm")} hrs</span></p>
+                            <p style='margin: 0 0 10px 0; font-size: 15px;'><b>Nueva Fecha y Hora:</b> <span style='color: #E60064; font-weight: bold;'>{fechaHora.ToString("dd/MM/yyyy HH:mm")} hrs</span></p>
                             <p style='margin: 0 0 15px 0; font-size: 15px;'><b>Sede:</b> {sede}</p>
                             <h3 style='margin: 0; color: #055A1C; font-size: 20px;'>FOLIO: {folio}</h3>
                         </div>
@@ -227,7 +226,6 @@ namespace RegistroCivilAPI.Controllers
                         <ul style='color: #555; line-height: 1.6; padding-left: 20px; font-size: 14px; margin-top: 0;'>
                             <li><strong>El trámite es estrictamente personal.</strong> Es obligatorio presentar Identificación Oficial (ID) vigente.</li>
                             <li><strong>SISTEMA DE PENALIZACIÓN:</strong> Si usted agenda su cita y NO asiste, el sistema lo bloqueará automáticamente, impidiéndole agendar un nuevo trámite durante <strong>1 semana</strong>.</li>
-                            <li>Si no puede asistir, por favor <strong>cancele o reprograme</strong> en el portal web hasta 2 horas antes de su horario. Liberar su espacio evita sanciones.</li>
                         </ul>
 
                         <hr style='border: 0; border-top: 1px solid #eee; margin: 30px 0;' />
@@ -238,7 +236,7 @@ namespace RegistroCivilAPI.Controllers
                 var mailMessage = new MailMessage
                 {
                     From = new MailAddress(correoOrigen, "Registro Civil Citas"),
-                    Subject = $"Confirmación de Cita - Folio: {folio}",
+                    Subject = $"{tituloPrincipal} - Folio: {folio}",
                     Body = mensajeHtml,
                     IsBodyHtml = true,
                 };
@@ -289,7 +287,13 @@ namespace RegistroCivilAPI.Controllers
         [HttpPut("{folio}/reagendar")]
         public async Task<ActionResult> ReagendarCita(string folio, [FromBody] ReagendarDTO dto)
         {
-            var cita = await _context.Citas.FirstOrDefaultAsync(c => c.IdCita == folio);
+            // Modificación: Agregamos los "Include" para poder leer los datos y mandarlos por correo
+            var cita = await _context.Citas
+                .Include(c => c.IdCiudadanoNavigation)
+                .Include(c => c.IdTramiteNavigation)
+                .Include(c => c.IdSedeNavigation)
+                .FirstOrDefaultAsync(c => c.IdCita == folio);
+
             if (cita == null) return NotFound(new { mensaje = "Cita no encontrada." });
             if (cita.Estatus == "CANCELADA" || cita.Estatus == "ATENDIDA" || cita.Estatus == "NO_ASISTIO" || cita.Estatus == "REPROGRAMADA")
                 return BadRequest(new { mensaje = "Solo se permite reprogramar la cita una vez. El estatus actual es " + cita.Estatus });
@@ -298,6 +302,12 @@ namespace RegistroCivilAPI.Controllers
             cita.FechaHoraFin = dto.NuevaFechaHora.AddMinutes(30);
             cita.Estatus = "REPROGRAMADA";
             await _context.SaveChangesAsync();
+
+            // NUEVO: Enviar correo de Reagendamiento
+            string nombreCompleto = $"{cita.IdCiudadanoNavigation.Nombre} {cita.IdCiudadanoNavigation.PrimerApellido} {cita.IdCiudadanoNavigation.SegundoApellido}".Trim();
+            string identificadorParaCorreo = !string.IsNullOrWhiteSpace(nombreCompleto) ? nombreCompleto : $"CURP: {cita.IdCiudadanoNavigation.Curp}";
+
+            await EnviarCorreoConfirmacion(cita.IdCiudadanoNavigation.Correo, identificadorParaCorreo, folio, dto.NuevaFechaHora, cita.IdTramiteNavigation.NombreTramite, cita.IdTramiteNavigation.Costo, cita.IdSedeNavigation.Nombre, cita.IdTramiteNavigation.Requisitos, true);
 
             return Ok(new { mensaje = "Cita reagendada con éxito." });
         }
