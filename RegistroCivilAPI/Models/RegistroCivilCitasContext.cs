@@ -171,10 +171,9 @@ public partial class RegistroCivilCitasContext : DbContext
             entity.Property(e => e.PasswordHash).HasMaxLength(255).IsUnicode(false).HasColumnName("password_hash");
             entity.Property(e => e.Username).HasMaxLength(50).IsUnicode(false).HasColumnName("username");
 
-            // MAPEO DEL CAMBIO DE CONTRASEÑA
+       
             entity.Property(e => e.RequiereCambioPassword).HasColumnName("requiere_cambio_password");
 
-            // RELACIONES RESTAURADAS
             entity.HasOne(d => d.IdRolNavigation).WithMany(p => p.UsuariosInternos)
                 .HasForeignKey(d => d.IdRol)
                 .OnDelete(DeleteBehavior.ClientSetNull)

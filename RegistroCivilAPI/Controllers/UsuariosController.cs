@@ -77,7 +77,7 @@ namespace RegistroCivilAPI.Controllers
             if (usr == null) return NotFound(new { mensaje = "Usuario no encontrado." });
 
             usr.PasswordHash = BCrypt.Net.BCrypt.HashPassword(dto.Password);
-            usr.RequiereCambioPassword = false; // ESTA ES LA LÍNEA QUE ARREGLA EL BUG
+            usr.RequiereCambioPassword = false; 
 
             await _context.SaveChangesAsync();
             return Ok(new { mensaje = "Contraseña actualizada correctamente." });
@@ -145,13 +145,13 @@ namespace RegistroCivilAPI.Controllers
         [HttpGet("EstadoSesion/{username}")]
         public async Task<ActionResult> VerificarEstadoSesionUsuario(string username)
         {
-            // Busca el acceso más reciente de este usuario
+            
             var ultimoAcceso = await _context.RegistroAccesos
                 .Where(a => a.Username == username)
                 .OrderByDescending(a => a.FechaLogin)
                 .FirstOrDefaultAsync();
 
-            // Si no tiene accesos o el último ya tiene fecha de cierre, lo botamos
+            
             if (ultimoAcceso == null || ultimoAcceso.FechaLogout != null)
                 return Ok(new { activa = false });
 

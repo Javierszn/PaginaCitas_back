@@ -81,7 +81,7 @@ namespace RegistroCivilAPI.Controllers
                 string nombreBuscado = string.IsNullOrWhiteSpace(solicitud.Nombre) ? null : solicitud.Nombre.Trim().ToUpper();
                 string telLimpio = solicitud.Telefono?.Trim();
 
-                // 1. SISTEMA ANTI-COYOTES (Match por teléfono SOLO SI HAY NOMBRE)
+                
                 if (!string.IsNullOrWhiteSpace(nombreBuscado))
                 {
                     var usuarioConMismoTel = await _context.Ciudadanos.FirstOrDefaultAsync(c => c.Telefono == telLimpio);
@@ -91,7 +91,7 @@ namespace RegistroCivilAPI.Controllers
                     }
                 }
 
-                // 2. BUSCAR CIUDADANO (Prioridad a CURP)
+                
                 if (!string.IsNullOrWhiteSpace(curpBuscado))
                 {
                     ciudadano = await _context.Ciudadanos.FirstOrDefaultAsync(c => c.Curp == curpBuscado);
@@ -126,14 +126,14 @@ namespace RegistroCivilAPI.Controllers
                     await _context.SaveChangesAsync();
                 }
 
-                // 3. SISTEMA DE PENALIZACIÓN DE 1 SEMANA
+                
                 var penalizado = await _context.Citas.AnyAsync(c => c.IdCiudadano == ciudadano.IdCiudadano && c.Estatus == "NO_ASISTIO" && c.FechaHoraInicio >= DateTime.Now.AddDays(-7));
                 if (penalizado)
                 {
                     return BadRequest(new { mensaje = "Sistema de Penalización: Usted cuenta con una inasistencia reciente. Por reglamento, podrá agendar nuevas citas al transcurrir 1 semana desde la falta." });
                 }
 
-                // 4. PREVENIR EL MISMO TRÁMITE EL MISMO DÍA (Diferentes trámites el mismo día SÍ pasan)
+               
                 var citaMismoTramite = await _context.Citas.AnyAsync(c =>
                     c.IdCiudadano == ciudadano.IdCiudadano &&
                     c.IdTramite == solicitud.IdTramite &&
@@ -154,7 +154,6 @@ namespace RegistroCivilAPI.Controllers
                 string nombreSede = sedeEntity?.Nombre ?? "Oficina del Registro Civil";
                 string requisitosTramite = tramiteEntity?.Requisitos ?? "Por favor comuníquese a la sede para confirmar los requisitos obligatorios.";
 
-                // LÓGICA: O NOMBRE O CURP
                 string nombreCompleto = $"{ciudadano.Nombre} {ciudadano.PrimerApellido} {ciudadano.SegundoApellido}".Trim();
                 string identificadorParaCorreo = !string.IsNullOrWhiteSpace(nombreCompleto) ? nombreCompleto : $"CURP: {ciudadano.Curp}";
 
@@ -169,7 +168,7 @@ namespace RegistroCivilAPI.Controllers
             }
         }
 
-        // Modificación: Agregamos la bandera "esReagendada" al final de los parámetros
+      
         private async Task EnviarCorreoConfirmacion(string correoDestino, string identificador, string folio, DateTime fechaHora, string tramite, decimal costo, string sede, string requisitos, bool esReagendada = false)
         {
             try
@@ -193,7 +192,7 @@ namespace RegistroCivilAPI.Controllers
                     foreach (var linea in lineas) { listaRequisitosHtml += $"<li style='margin-bottom: 8px;'>{linea.Trim('•', ' ', '-')}</li>"; }
                 }
 
-                // Títulos dinámicos según el tipo de correo
+               
                 string tituloPrincipal = esReagendada ? "Confirmación de Cita Reagendada" : "Confirmación de Cita Registrada";
                 string textoSecundario = esReagendada ? "Su cita ha sido reagendada exitosamente para una nueva fecha." : "Su cita ha sido generada exitosamente.";
 
@@ -287,7 +286,7 @@ namespace RegistroCivilAPI.Controllers
         [HttpPut("{folio}/reagendar")]
         public async Task<ActionResult> ReagendarCita(string folio, [FromBody] ReagendarDTO dto)
         {
-            // Modificación: Agregamos los "Include" para poder leer los datos y mandarlos por correo
+            
             var cita = await _context.Citas
                 .Include(c => c.IdCiudadanoNavigation)
                 .Include(c => c.IdTramiteNavigation)
@@ -303,7 +302,7 @@ namespace RegistroCivilAPI.Controllers
             cita.Estatus = "REPROGRAMADA";
             await _context.SaveChangesAsync();
 
-            // NUEVO: Enviar correo de Reagendamiento
+           
             string nombreCompleto = $"{cita.IdCiudadanoNavigation.Nombre} {cita.IdCiudadanoNavigation.PrimerApellido} {cita.IdCiudadanoNavigation.SegundoApellido}".Trim();
             string identificadorParaCorreo = !string.IsNullOrWhiteSpace(nombreCompleto) ? nombreCompleto : $"CURP: {cita.IdCiudadanoNavigation.Curp}";
 
