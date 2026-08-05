@@ -23,6 +23,7 @@ public partial class RegistroCivilCitasContext : DbContext
     public virtual DbSet<UsuariosInterno> UsuariosInternos { get; set; }
     public virtual DbSet<AvisoGlobal> AvisosGlobales { get; set; }
     public virtual DbSet<RegistroAcceso> RegistroAccesos { get; set; }
+    public virtual DbSet<ConfiguracionAgenda> ConfiguracionAgendas { get; set; }
 
     protected override void OnConfiguring(DbContextOptionsBuilder optionsBuilder)
         => optionsBuilder.UseSqlServer("Server=localhost\\SQLEXPRESS;Database=RegistroCivil_Citas;Trusted_Connection=True;TrustServerCertificate=True;");
@@ -150,6 +151,8 @@ public partial class RegistroCivilCitasContext : DbContext
             entity.Property(e => e.DuracionMinutos).HasColumnName("duracion_minutos");
             entity.Property(e => e.IdCategoria).HasColumnName("id_categoria");
             entity.Property(e => e.LimiteDiarioSede).HasColumnName("limite_diario_sede");
+            entity.Property(e => e.FechaInicioPermitida).HasColumnType("date").HasColumnName("fecha_inicio_permitida");
+            entity.Property(e => e.FechaFinPermitida).HasColumnType("date").HasColumnName("fecha_fin_permitida");
             entity.Property(e => e.NombreTramite).HasMaxLength(100).IsUnicode(false).HasColumnName("nombre_tramite");
             entity.Property(e => e.Requisitos).HasColumnType("varchar(500)").HasColumnName("requisitos");
             entity.HasOne(d => d.IdCategoriaNavigation).WithMany(p => p.Tramites)
@@ -204,7 +207,14 @@ public partial class RegistroCivilCitasContext : DbContext
             entity.Property(e => e.FechaLogin).HasColumnType("datetime").HasColumnName("fecha_login");
             entity.Property(e => e.FechaLogout).HasColumnType("datetime").HasColumnName("fecha_logout");
         });
-
+        modelBuilder.Entity<ConfiguracionAgenda>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.ToTable("Configuracion_Agenda");
+            entity.Property(e => e.Id).HasColumnName("id");
+            entity.Property(e => e.FechaInicio).HasColumnType("date").HasColumnName("fecha_inicio");
+            entity.Property(e => e.FechaFin).HasColumnType("date").HasColumnName("fecha_fin");
+        });
         OnModelCreatingPartial(modelBuilder);
     }
 

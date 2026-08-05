@@ -14,7 +14,8 @@ public partial class Tramite
     public decimal Costo { get; set; }
     public bool? Activo { get; set; }
     public string? Requisitos { get; set; }
-
+    public DateTime? FechaInicioPermitida { get; set; }
+    public DateTime? FechaFinPermitida { get; set; }
     public virtual CategoriasTramite IdCategoriaNavigation { get; set; } = null!;
     public virtual ICollection<Cita> Citas { get; set; } = new List<Cita>();
 }

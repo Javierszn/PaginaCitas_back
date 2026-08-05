@@ -36,15 +36,29 @@ namespace RegistroCivilAPI.Controllers
         {
             if (fecha.Date < DateTime.Today) return Ok(new List<string>());
 
+            // NUEVO: Validación de Rango Permitido (Bloqueo de fechas fuera de rango)
+            var config = await _context.ConfiguracionAgendas.FirstOrDefaultAsync(c => c.Id == 1);
+            if (config != null)
+            {
+                if (fecha.Date < config.FechaInicio.Date || fecha.Date > config.FechaFin.Date)
+                    return Ok(new List<string>()); // Bloquea si la fecha no está habilitada por el director
+            }
+
             var inhabil = await _context.DiasInhabiles.AnyAsync(d => d.FechaBloqueada == DateOnly.FromDateTime(fecha) && (d.IdSede == idSede || d.IdSede == null));
             if (inhabil) return Ok(new List<string>());
 
             byte diaSemana = (byte)(fecha.DayOfWeek == DayOfWeek.Sunday ? 7 : (int)fecha.DayOfWeek);
             var horarioSede = await _context.HorariosSedes.FirstOrDefaultAsync(h => h.IdSede == idSede && h.DiaSemana == diaSemana);
             if (horarioSede == null) return Ok(new List<string>());
-
             var tramite = await _context.Tramites.FindAsync(idTramite);
             if (tramite == null) return BadRequest("Trámite no encontrado");
+
+            // NUEVO: Bloqueo por fechas específicas del trámite
+            if (tramite.FechaInicioPermitida.HasValue && fecha.Date < tramite.FechaInicioPermitida.Value.Date)
+                return Ok(new List<string>()); // Antes del inicio permitido
+
+            if (tramite.FechaFinPermitida.HasValue && fecha.Date > tramite.FechaFinPermitida.Value.Date)
+                return Ok(new List<string>()); // Después del fin permitido
 
             int intervalo = tramite.DuracionMinutos > 0 ? tramite.DuracionMinutos : 30;
             int limiteDiario = tramite.LimiteDiarioSede > 0 ? tramite.LimiteDiarioSede : 999;
@@ -74,6 +88,8 @@ namespace RegistroCivilAPI.Controllers
         [HttpPost]
         public async Task<ActionResult> AgendarCita([FromBody] CitaDTO solicitud)
         {
+            if (!await ValidarReCaptcha(solicitud.CaptchaToken))
+                return BadRequest(new { mensaje = "Verificación de seguridad fallida. Por favor, complete el Captcha." });
             try
             {
                 Ciudadano ciudadano = null;
@@ -246,10 +262,20 @@ namespace RegistroCivilAPI.Controllers
         }
 
         [HttpGet("{folio}")]
-        public async Task<ActionResult> ObtenerCita(string folio)
+       
+        public async Task<ActionResult> ObtenerCita(string folio, [FromQuery] string captchaToken)
         {
+            if (!await ValidarReCaptcha(captchaToken))
+                return BadRequest(new { mensaje = "Verificación de seguridad fallida. Complete el Captcha." });
+
             await AutoActualizarInasistenciasAsync();
-            var cita = await _context.Citas.Include(c => c.IdCiudadanoNavigation).Include(c => c.IdTramiteNavigation).Include(c => c.IdSedeNavigation).FirstOrDefaultAsync(c => c.IdCita == folio);
+
+            var cita = await _context.Citas
+                .Include(c => c.IdCiudadanoNavigation)
+                .Include(c => c.IdTramiteNavigation)
+                .Include(c => c.IdSedeNavigation)
+                .FirstOrDefaultAsync(c => c.IdCita == folio);
+
             if (cita == null) return NotFound(new { mensaje = "No se encontró ninguna cita registrada con este folio." });
 
             return Ok(new
@@ -270,7 +296,6 @@ namespace RegistroCivilAPI.Controllers
                 curp = cita.IdCiudadanoNavigation.Curp
             });
         }
-
         [HttpPut("{folio}/cancelar")]
         public async Task<ActionResult> CancelarCita(string folio)
         {
@@ -359,6 +384,18 @@ namespace RegistroCivilAPI.Controllers
 
             return Ok(new { mensaje = $"La cita se ha marcado como {dto.NuevoEstatus} correctamente." });
         }
+        private async Task<bool> ValidarReCaptcha(string token)
+        {
+            if (string.IsNullOrEmpty(token)) return false;
+            // Estas son claves de prueba globales de Google (siempre pasan). 
+            // Para producción, cámbiala por tu Secret Key real de Google reCAPTCHA.
+            var secret = "6LeIxAcTAAAAAGG-vFI1TnRWxMZNFuojJ4WifJWe";
+            using var client = new HttpClient();
+            var response = await client.PostAsync($"https://www.google.com/recaptcha/api/siteverify?secret={secret}&response={token}", null);
+            var json = await response.Content.ReadAsStringAsync();
+            using var doc = System.Text.Json.JsonDocument.Parse(json);
+            return doc.RootElement.GetProperty("success").GetBoolean();
+        }
     }
 
     public class CambioEstatusDTO { public string NuevoEstatus { get; set; } public int IdUsuarioInterno { get; set; } }
@@ -376,5 +413,7 @@ namespace RegistroCivilAPI.Controllers
         public DateTime FechaHora { get; set; }
         public string Navegador { get; set; }
         public string SistemaOperativo { get; set; }
+        public string CaptchaToken { get; set; }
     }
+
 }

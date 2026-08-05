@@ -68,6 +68,8 @@ namespace RegistroCivilAPI.Controllers
                 t.Costo = dto.Costo;
                 t.Activo = dto.Activo;
                 t.LimiteDiarioSede = dto.LimiteDiario;
+                t.FechaInicioPermitida = dto.FechaInicio; 
+                t.FechaFinPermitida = dto.FechaFin;       
             }
 
             await _context.SaveChangesAsync();
@@ -81,5 +83,7 @@ namespace RegistroCivilAPI.Controllers
         public decimal Costo { get; set; }
         public bool Activo { get; set; }
         public int LimiteDiario { get; set; }
+        public DateTime? FechaInicio { get; set; }
+        public DateTime? FechaFin { get; set; }
     }
 }
