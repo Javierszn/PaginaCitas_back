@@ -10,35 +10,24 @@ using System.Text;
 
 var builder = WebApplication.CreateBuilder(args);
 
-
 builder.Services.AddDbContext<RegistroCivilCitasContext>(options =>
     options.UseSqlServer(builder.Configuration.GetConnectionString("DefaultConnection")));
 
 builder.Services.AddControllers();
-// Configuración de CORS estricto
+
+// Configuración ÚNICA de CORS estricto
 builder.Services.AddCors(options =>
 {
     options.AddPolicy("PoliticaProduccion", policy =>
     {
         policy.WithOrigins(
-                "http://localhost:4200", // Para que tú sigas haciendo pruebas locales
-                "https://www.tudominiooficial.gob.mx" // <--- Cámbialo por el dominio real cuando lo tengan
+                "http://localhost:4200", // Para que sigas haciendo pruebas locales
+                "https://www.tudominiooficial.gob.mx" // Cámbialo por el dominio real cuando lo tengan
               )
               .AllowAnyHeader()
               .AllowAnyMethod();
     });
 });
-
-builder.Services.AddCors(options =>
-{
-    options.AddPolicy("PermitirAngular", policy =>
-    {
-        policy.WithOrigins("http://localhost:4200")
-              .AllowAnyHeader()
-              .AllowAnyMethod();
-    });
-});
-
 
 var jwtKey = builder.Configuration["JwtSettings:SecretKey"];
 var keyBytes = Encoding.UTF8.GetBytes(jwtKey);
@@ -46,7 +35,7 @@ var keyBytes = Encoding.UTF8.GetBytes(jwtKey);
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(options =>
     {
-        options.RequireHttpsMetadata = false; 
+        options.RequireHttpsMetadata = false;
         options.SaveToken = true;
         options.TokenValidationParameters = new TokenValidationParameters
         {
@@ -63,8 +52,7 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
 
 var app = builder.Build();
 
-app.UseCors("PermitirAngular");
-app.UseCors("PoliticaProduccion"); // <-- Agrega esta línea
+app.UseCors("PoliticaProduccion"); 
 
 app.UseAuthentication();
 app.UseAuthorization();
