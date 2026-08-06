@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore;
 using RegistroCivilAPI.Models;
 using System.Linq;
 using System.Threading.Tasks;
+using Microsoft.AspNetCore.Authorization;
 
 namespace RegistroCivilAPI.Controllers
 {
@@ -35,6 +36,7 @@ namespace RegistroCivilAPI.Controllers
 
     
         [HttpGet("Admin")]
+        [Authorize(Roles = "Super Administrador")]
         public async Task<ActionResult> GetTramitesAdmin()
         {
             var categorias = await _context.CategoriasTramites
@@ -51,6 +53,7 @@ namespace RegistroCivilAPI.Controllers
 
      
         [HttpPut("Categoria/{idCategoria}")]
+        [Authorize(Roles = "Super Administrador")]
         public async Task<ActionResult> UpdateCategoria(int idCategoria, [FromBody] CategoriaUpdateDTO dto)
         {
             var categoria = await _context.CategoriasTramites.FindAsync(idCategoria);

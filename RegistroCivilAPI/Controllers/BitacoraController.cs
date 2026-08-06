@@ -4,9 +4,11 @@ using RegistroCivilAPI.Models;
 using System;
 using System.Linq;
 using System.Threading.Tasks;
+using Microsoft.AspNetCore.Authorization;
 
 namespace RegistroCivilAPI.Controllers
 {
+    [Authorize(Roles = "Administrador,Super Administrador")]
     [Route("api/[controller]")]
     [ApiController]
     public class BitacoraController : ControllerBase

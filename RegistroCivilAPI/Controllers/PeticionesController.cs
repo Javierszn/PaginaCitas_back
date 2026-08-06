@@ -4,6 +4,7 @@ using RegistroCivilAPI.Models;
 using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
+using Microsoft.AspNetCore.Authorization;
 
 namespace RegistroCivilAPI.Controllers
 {
@@ -19,6 +20,7 @@ namespace RegistroCivilAPI.Controllers
         }
 
         [HttpGet]
+        [Authorize(Roles = "Super Administrador")]
         public async Task<ActionResult> GetPeticiones()
         {
             var peticiones = new List<object>();
@@ -49,12 +51,13 @@ namespace RegistroCivilAPI.Controllers
         }
 
         [HttpGet("MisPeticiones/{username}")]
+        [Authorize]
         public async Task<ActionResult> GetMisPeticiones(string username)
         {
             var peticiones = new List<object>();
             using (var command = _context.Database.GetDbConnection().CreateCommand())
             {
-                
+
                 command.CommandText = "SELECT id_peticion, tipo_peticion, descripcion, estatus, fecha_solicitud, respuesta, leido FROM Peticiones_Soporte WHERE username_solicitante = @username ORDER BY fecha_solicitud DESC";
 
                 var paramUsername = command.CreateParameter();
@@ -85,6 +88,7 @@ namespace RegistroCivilAPI.Controllers
         }
 
         [HttpPost]
+        [AllowAnonymous]
         public async Task<ActionResult> CreatePeticion([FromBody] NuevaPeticionDTO dto)
         {
             await _context.Database.ExecuteSqlRawAsync(
@@ -95,6 +99,7 @@ namespace RegistroCivilAPI.Controllers
         }
 
         [HttpPut("{id}/resolver")]
+        [Authorize(Roles = "Super Administrador")]
         public async Task<ActionResult> ResolverPeticion(int id, [FromBody] RespuestaDTO dto)
         {
 
@@ -105,6 +110,7 @@ namespace RegistroCivilAPI.Controllers
         }
 
         [HttpPut("MarcarLeidasAdmin")]
+        [Authorize(Roles = "Super Administrador")]
         public async Task<ActionResult> MarcarLeidasAdmin()
         {
             await _context.Database.ExecuteSqlRawAsync("UPDATE Peticiones_Soporte SET leido = 1 WHERE estatus = 'PENDIENTE'");
@@ -112,6 +118,7 @@ namespace RegistroCivilAPI.Controllers
         }
 
         [HttpPut("MarcarLeidasUsuario/{username}")]
+        [Authorize]
         public async Task<ActionResult> MarcarLeidasUsuario(string username)
         {
             await _context.Database.ExecuteSqlRawAsync("UPDATE Peticiones_Soporte SET leido = 1 WHERE username_solicitante = {0} AND estatus = 'RESUELTA'", username);

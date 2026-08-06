@@ -4,6 +4,9 @@ using RegistroCivilAPI.Models;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
+using Microsoft.AspNetCore.Authorization;
+using System.ComponentModel.DataAnnotations;
+using System;
 
 namespace RegistroCivilAPI.Controllers
 {
@@ -19,6 +22,7 @@ namespace RegistroCivilAPI.Controllers
         }
 
         [HttpGet]
+        [Authorize(Roles = "Super Administrador")]
         public async Task<ActionResult<IEnumerable<object>>> GetUsuarios()
         {
             return await _context.UsuariosInternos
@@ -37,6 +41,7 @@ namespace RegistroCivilAPI.Controllers
         }
 
         [HttpPost]
+        [Authorize(Roles = "Super Administrador")]
         public async Task<ActionResult> CrearUsuario([FromBody] NuevoUsuarioDTO dto)
         {
             if (await _context.UsuariosInternos.AnyAsync(u => u.Username == dto.Username))
@@ -60,6 +65,7 @@ namespace RegistroCivilAPI.Controllers
         }
 
         [HttpPut("{id}/estado")]
+        [Authorize(Roles = "Super Administrador")]
         public async Task<ActionResult> ToggleEstado(int id)
         {
             var usr = await _context.UsuariosInternos.FindAsync(id);
@@ -71,19 +77,21 @@ namespace RegistroCivilAPI.Controllers
         }
 
         [HttpPut("{id}/password")]
+        [Authorize]
         public async Task<ActionResult> CambiarPassword(int id, [FromBody] PasswordDTO dto)
         {
             var usr = await _context.UsuariosInternos.FindAsync(id);
             if (usr == null) return NotFound(new { mensaje = "Usuario no encontrado." });
 
             usr.PasswordHash = BCrypt.Net.BCrypt.HashPassword(dto.Password);
-            usr.RequiereCambioPassword = false; 
+            usr.RequiereCambioPassword = false;
 
             await _context.SaveChangesAsync();
             return Ok(new { mensaje = "Contraseña actualizada correctamente." });
         }
 
         [HttpPut("{id}/sede")]
+        [Authorize(Roles = "Super Administrador")]
         public async Task<ActionResult> CambiarSede(int id, [FromBody] SedeDTO dto)
         {
             var usr = await _context.UsuariosInternos.FindAsync(id);
@@ -95,6 +103,7 @@ namespace RegistroCivilAPI.Controllers
         }
 
         [HttpGet("Soporte")]
+        [AllowAnonymous]
         public async Task<ActionResult> GetUsuariosSoporte()
         {
             var usuarios = await _context.UsuariosInternos
@@ -104,6 +113,7 @@ namespace RegistroCivilAPI.Controllers
         }
 
         [HttpGet("Accesos")]
+        [Authorize(Roles = "Super Administrador")]
         public async Task<ActionResult> GetAccesos([FromQuery] int page = 1, [FromQuery] int pageSize = 10, [FromQuery] string? fecha = null, [FromQuery] string? busqueda = null)
         {
             var query = _context.RegistroAccesos.AsQueryable();
@@ -131,7 +141,9 @@ namespace RegistroCivilAPI.Controllers
                 Datos = accesos
             });
         }
+
         [HttpPut("Accesos/{idAcceso}/cerrar")]
+        [Authorize(Roles = "Super Administrador")]
         public async Task<ActionResult> CerrarSesionRemota(int idAcceso)
         {
             var acceso = await _context.RegistroAccesos.FindAsync(idAcceso);
@@ -142,16 +154,16 @@ namespace RegistroCivilAPI.Controllers
             await _context.SaveChangesAsync();
             return Ok(new { mensaje = "Sesión cerrada remotamente de forma exitosa." });
         }
+
         [HttpGet("EstadoSesion/{username}")]
+        [Authorize]
         public async Task<ActionResult> VerificarEstadoSesionUsuario(string username)
         {
-            
             var ultimoAcceso = await _context.RegistroAccesos
                 .Where(a => a.Username == username)
                 .OrderByDescending(a => a.FechaLogin)
                 .FirstOrDefaultAsync();
 
-            
             if (ultimoAcceso == null || ultimoAcceso.FechaLogout != null)
                 return Ok(new { activa = false });
 
@@ -159,8 +171,33 @@ namespace RegistroCivilAPI.Controllers
         }
     }
 
+    // --- DTOs CON VALIDACIÓN DE SEGURIDAD ---
 
-    public class NuevoUsuarioDTO { public string Username { get; set; } public string Password { get; set; } public string NombreCompleto { get; set; } public int IdRol { get; set; } public int IdSede { get; set; } }
-    public class PasswordDTO { public string Password { get; set; } }
-    public class SedeDTO { public int IdSede { get; set; } }
+    public class NuevoUsuarioDTO
+    {
+        [Required(ErrorMessage = "El nombre de usuario es obligatorio.")]
+        public string Username { get; set; }
+
+        [Required(ErrorMessage = "La contraseña es obligatoria.")]
+        [RegularExpression(@"^(?=.*[A-Z])(?=.*\d)(?=.*[\W_]).{6,}$", ErrorMessage = "La contraseña debe tener mínimo 6 caracteres, 1 mayúscula, 1 número y 1 carácter especial.")]
+        public string Password { get; set; }
+
+        [Required(ErrorMessage = "El nombre completo es obligatorio.")]
+        public string NombreCompleto { get; set; }
+
+        public int IdRol { get; set; }
+        public int IdSede { get; set; }
+    }
+
+    public class PasswordDTO
+    {
+        [Required(ErrorMessage = "La contraseña es obligatoria.")]
+        [RegularExpression(@"^(?=.*[A-Z])(?=.*\d)(?=.*[\W_]).{6,}$", ErrorMessage = "La contraseña debe tener mínimo 6 caracteres, 1 mayúscula, 1 número y 1 carácter especial.")]
+        public string Password { get; set; }
+    }
+
+    public class SedeDTO
+    {
+        public int IdSede { get; set; }
+    }
 }

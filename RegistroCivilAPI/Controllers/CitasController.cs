@@ -2,11 +2,13 @@
 using System.Collections.Generic;
 using System.Linq;
 using System.Net;
+using System.Net.Http;
 using System.Net.Mail;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
+using Microsoft.AspNetCore.Authorization;
 using RegistroCivilAPI.Models;
 
 namespace RegistroCivilAPI.Controllers
@@ -36,12 +38,11 @@ namespace RegistroCivilAPI.Controllers
         {
             if (fecha.Date < DateTime.Today) return Ok(new List<string>());
 
-            // NUEVO: Validación de Rango Permitido (Bloqueo de fechas fuera de rango)
             var config = await _context.ConfiguracionAgendas.FirstOrDefaultAsync(c => c.Id == 1);
             if (config != null)
             {
                 if (fecha.Date < config.FechaInicio.Date || fecha.Date > config.FechaFin.Date)
-                    return Ok(new List<string>()); // Bloquea si la fecha no está habilitada por el director
+                    return Ok(new List<string>());
             }
 
             var inhabil = await _context.DiasInhabiles.AnyAsync(d => d.FechaBloqueada == DateOnly.FromDateTime(fecha) && (d.IdSede == idSede || d.IdSede == null));
@@ -53,12 +54,11 @@ namespace RegistroCivilAPI.Controllers
             var tramite = await _context.Tramites.FindAsync(idTramite);
             if (tramite == null) return BadRequest("Trámite no encontrado");
 
-            // NUEVO: Bloqueo por fechas específicas del trámite
             if (tramite.FechaInicioPermitida.HasValue && fecha.Date < tramite.FechaInicioPermitida.Value.Date)
-                return Ok(new List<string>()); // Antes del inicio permitido
+                return Ok(new List<string>());
 
             if (tramite.FechaFinPermitida.HasValue && fecha.Date > tramite.FechaFinPermitida.Value.Date)
-                return Ok(new List<string>()); // Después del fin permitido
+                return Ok(new List<string>());
 
             int intervalo = tramite.DuracionMinutos > 0 ? tramite.DuracionMinutos : 30;
             int limiteDiario = tramite.LimiteDiarioSede > 0 ? tramite.LimiteDiarioSede : 999;
@@ -97,7 +97,7 @@ namespace RegistroCivilAPI.Controllers
                 string nombreBuscado = string.IsNullOrWhiteSpace(solicitud.Nombre) ? null : solicitud.Nombre.Trim().ToUpper();
                 string telLimpio = solicitud.Telefono?.Trim();
 
-                
+
                 if (!string.IsNullOrWhiteSpace(nombreBuscado))
                 {
                     var usuarioConMismoTel = await _context.Ciudadanos.FirstOrDefaultAsync(c => c.Telefono == telLimpio);
@@ -107,7 +107,7 @@ namespace RegistroCivilAPI.Controllers
                     }
                 }
 
-                
+
                 if (!string.IsNullOrWhiteSpace(curpBuscado))
                 {
                     ciudadano = await _context.Ciudadanos.FirstOrDefaultAsync(c => c.Curp == curpBuscado);
@@ -142,14 +142,14 @@ namespace RegistroCivilAPI.Controllers
                     await _context.SaveChangesAsync();
                 }
 
-                
+
                 var penalizado = await _context.Citas.AnyAsync(c => c.IdCiudadano == ciudadano.IdCiudadano && c.Estatus == "NO_ASISTIO" && c.FechaHoraInicio >= DateTime.Now.AddDays(-7));
                 if (penalizado)
                 {
                     return BadRequest(new { mensaje = "Sistema de Penalización: Usted cuenta con una inasistencia reciente. Por reglamento, podrá agendar nuevas citas al transcurrir 1 semana desde la falta." });
                 }
 
-               
+
                 var citaMismoTramite = await _context.Citas.AnyAsync(c =>
                     c.IdCiudadano == ciudadano.IdCiudadano &&
                     c.IdTramite == solicitud.IdTramite &&
@@ -184,7 +184,7 @@ namespace RegistroCivilAPI.Controllers
             }
         }
 
-      
+
         private async Task EnviarCorreoConfirmacion(string correoDestino, string identificador, string folio, DateTime fechaHora, string tramite, decimal costo, string sede, string requisitos, bool esReagendada = false)
         {
             try
@@ -208,7 +208,7 @@ namespace RegistroCivilAPI.Controllers
                     foreach (var linea in lineas) { listaRequisitosHtml += $"<li style='margin-bottom: 8px;'>{linea.Trim('•', ' ', '-')}</li>"; }
                 }
 
-               
+
                 string tituloPrincipal = esReagendada ? "Confirmación de Cita Reagendada" : "Confirmación de Cita Registrada";
                 string textoSecundario = esReagendada ? "Su cita ha sido reagendada exitosamente para una nueva fecha." : "Su cita ha sido generada exitosamente.";
 
@@ -262,7 +262,6 @@ namespace RegistroCivilAPI.Controllers
         }
 
         [HttpGet("{folio}")]
-       
         public async Task<ActionResult> ObtenerCita(string folio, [FromQuery] string captchaToken)
         {
             if (!await ValidarReCaptcha(captchaToken))
@@ -296,6 +295,7 @@ namespace RegistroCivilAPI.Controllers
                 curp = cita.IdCiudadanoNavigation.Curp
             });
         }
+
         [HttpPut("{folio}/cancelar")]
         public async Task<ActionResult> CancelarCita(string folio)
         {
@@ -311,7 +311,6 @@ namespace RegistroCivilAPI.Controllers
         [HttpPut("{folio}/reagendar")]
         public async Task<ActionResult> ReagendarCita(string folio, [FromBody] ReagendarDTO dto)
         {
-            
             var cita = await _context.Citas
                 .Include(c => c.IdCiudadanoNavigation)
                 .Include(c => c.IdTramiteNavigation)
@@ -327,7 +326,6 @@ namespace RegistroCivilAPI.Controllers
             cita.Estatus = "REPROGRAMADA";
             await _context.SaveChangesAsync();
 
-           
             string nombreCompleto = $"{cita.IdCiudadanoNavigation.Nombre} {cita.IdCiudadanoNavigation.PrimerApellido} {cita.IdCiudadanoNavigation.SegundoApellido}".Trim();
             string identificadorParaCorreo = !string.IsNullOrWhiteSpace(nombreCompleto) ? nombreCompleto : $"CURP: {cita.IdCiudadanoNavigation.Curp}";
 
@@ -336,7 +334,10 @@ namespace RegistroCivilAPI.Controllers
             return Ok(new { mensaje = "Cita reagendada con éxito." });
         }
 
+        // --- RUTAS ADMINISTRATIVAS (AHORA PROTEGIDAS) ---
+
         [HttpGet("PorSede/{idSede}")]
+        [Authorize] // <--- Seguridad añadida
         public async Task<ActionResult> ObtenerCitasPorSede(int idSede, [FromQuery] string? fecha = null, [FromQuery] string? busqueda = null)
         {
             await AutoActualizarInasistenciasAsync();
@@ -370,6 +371,7 @@ namespace RegistroCivilAPI.Controllers
         }
 
         [HttpPut("{folio}/actualizarEstatus")]
+        [Authorize] // <--- Seguridad añadida
         public async Task<ActionResult> ActualizarEstatus(string folio, [FromBody] CambioEstatusDTO dto)
         {
             var cita = await _context.Citas.FirstOrDefaultAsync(c => c.IdCita == folio);
@@ -384,12 +386,14 @@ namespace RegistroCivilAPI.Controllers
 
             return Ok(new { mensaje = $"La cita se ha marcado como {dto.NuevoEstatus} correctamente." });
         }
+
         private async Task<bool> ValidarReCaptcha(string token)
         {
             if (string.IsNullOrEmpty(token)) return false;
-            // Estas son claves de prueba globales de Google (siempre pasan). 
-            // Para producción, cámbiala por tu Secret Key real de Google reCAPTCHA.
-            var secret = "6LeIxAcTAAAAAGG-vFI1TnRWxMZNFuojJ4WifJWe";
+
+            // AHORA SE LEE DESDE LOS SECRETOS DE CONFIGURACIÓN
+            var secret = _config["RecaptchaSettings:SecretKey"];
+
             using var client = new HttpClient();
             var response = await client.PostAsync($"https://www.google.com/recaptcha/api/siteverify?secret={secret}&response={token}", null);
             var json = await response.Content.ReadAsStringAsync();
@@ -415,5 +419,4 @@ namespace RegistroCivilAPI.Controllers
         public string SistemaOperativo { get; set; }
         public string CaptchaToken { get; set; }
     }
-
 }
