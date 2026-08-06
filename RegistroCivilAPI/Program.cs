@@ -15,7 +15,19 @@ builder.Services.AddDbContext<RegistroCivilCitasContext>(options =>
     options.UseSqlServer(builder.Configuration.GetConnectionString("DefaultConnection")));
 
 builder.Services.AddControllers();
-
+// Configuración de CORS estricto
+builder.Services.AddCors(options =>
+{
+    options.AddPolicy("PoliticaProduccion", policy =>
+    {
+        policy.WithOrigins(
+                "http://localhost:4200", // Para que tú sigas haciendo pruebas locales
+                "https://www.tudominiooficial.gob.mx" // <--- Cámbialo por el dominio real cuando lo tengan
+              )
+              .AllowAnyHeader()
+              .AllowAnyMethod();
+    });
+});
 
 builder.Services.AddCors(options =>
 {
@@ -52,6 +64,7 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
 var app = builder.Build();
 
 app.UseCors("PermitirAngular");
+app.UseCors("PoliticaProduccion"); // <-- Agrega esta línea
 
 app.UseAuthentication();
 app.UseAuthorization();
