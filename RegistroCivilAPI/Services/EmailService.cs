@@ -6,13 +6,11 @@ using Microsoft.Extensions.Configuration;
 
 namespace RegistroCivilAPI.Services
 {
-    // Esta es la "promesa" de lo que el servicio puede hacer
     public interface IEmailService
     {
         Task EnviarCorreoConfirmacionAsync(string correoDestino, string identificador, string folio, DateTime fechaHora, string tramite, decimal costo, string sede, string requisitos, bool esReagendada = false);
     }
 
-    // Esta es la implementación real
     public class EmailService : IEmailService
     {
         private readonly IConfiguration _config;
