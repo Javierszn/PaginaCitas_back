@@ -26,8 +26,12 @@ public partial class RegistroCivilCitasContext : DbContext
     public virtual DbSet<ConfiguracionAgenda> ConfiguracionAgendas { get; set; }
 
     protected override void OnConfiguring(DbContextOptionsBuilder optionsBuilder)
-        => optionsBuilder.UseSqlServer("Server=localhost\\SQLEXPRESS;Database=RegistroCivil_Citas;Trusted_Connection=True;TrustServerCertificate=True;");
-
+    {
+        if (!optionsBuilder.IsConfigured)
+        {
+            optionsBuilder.UseSqlServer("Server=localhost\\SQLEXPRESS;Database=RegistroCivil_Citas;Trusted_Connection=True;TrustServerCertificate=True;");
+        }
+    }
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.Entity<BitacoraAuditorium>(entity =>
@@ -216,7 +220,9 @@ public partial class RegistroCivilCitasContext : DbContext
             entity.Property(e => e.FechaFin).HasColumnType("date").HasColumnName("fecha_fin");
         });
         OnModelCreatingPartial(modelBuilder);
+
     }
 
     partial void OnModelCreatingPartial(ModelBuilder modelBuilder);
+
 }

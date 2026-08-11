@@ -80,6 +80,19 @@ namespace RegistroCivilAPI.Controllers
         [Authorize]
         public async Task<ActionResult> CambiarPassword(int id, [FromBody] PasswordDTO dto)
         {
+            // Un Super Administrador puede resetear la contraseña de cualquiera.
+            // Cualquier otro rol SOLO puede cambiar su propia contraseña.
+            var esSuperAdmin = User.IsInRole("Super Administrador");
+            var idClaim = User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value;
+
+            if (!esSuperAdmin)
+            {
+                if (idClaim == null || !int.TryParse(idClaim, out int idAutenticado) || idAutenticado != id)
+                {
+                    return Forbid();
+                }
+            }
+
             var usr = await _context.UsuariosInternos.FindAsync(id);
             if (usr == null) return NotFound(new { mensaje = "Usuario no encontrado." });
 
@@ -103,7 +116,7 @@ namespace RegistroCivilAPI.Controllers
         }
 
         [HttpGet("Soporte")]
-        [AllowAnonymous]
+        [Authorize]   // <-- antes era [AllowAnonymous]
         public async Task<ActionResult> GetUsuariosSoporte()
         {
             var usuarios = await _context.UsuariosInternos
@@ -111,7 +124,6 @@ namespace RegistroCivilAPI.Controllers
                 .ToListAsync();
             return Ok(usuarios);
         }
-
         [HttpGet("Accesos")]
         [Authorize(Roles = "Super Administrador")]
         public async Task<ActionResult> GetAccesos([FromQuery] int page = 1, [FromQuery] int pageSize = 10, [FromQuery] string? fecha = null, [FromQuery] string? busqueda = null)

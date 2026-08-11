@@ -23,11 +23,15 @@ namespace RegistroCivilAPI.Controllers
             var dias = await _context.DiasInhabiles.Select(d => new { id = d.IdDiaInhabil, fecha = d.FechaBloqueada, motivo = d.Motivo }).ToListAsync();
             return Ok(new { rango = rango, diasInhabiles = dias });
         }
-
         [Authorize(Roles = "Administrador,Super Administrador")]
         [HttpPut("Rango")]
         public async Task<ActionResult> UpdateRango([FromBody] ConfiguracionAgenda dto)
         {
+            if (dto.FechaInicio.Date >= dto.FechaFin.Date)
+            {
+                return BadRequest(new { mensaje = "La fecha de inicio debe ser anterior a la fecha de fin." });
+            }
+
             var rango = await _context.ConfiguracionAgendas.FirstOrDefaultAsync(c => c.Id == 1);
             if (rango == null)
             {
@@ -41,7 +45,6 @@ namespace RegistroCivilAPI.Controllers
             await _context.SaveChangesAsync();
             return Ok(new { mensaje = "Rango de fechas de reservación actualizado." });
         }
-
         [Authorize(Roles = "Administrador,Super Administrador")]
         [HttpPost("DiasInhabiles")]
         public async Task<ActionResult> AddDiaInhabil([FromBody] DiaInhabilDTO dto)

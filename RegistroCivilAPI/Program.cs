@@ -1,16 +1,17 @@
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.HttpOverrides;
+using Microsoft.AspNetCore.RateLimiting;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
-using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using RegistroCivilAPI.Models;
+using RegistroCivilAPI.Services;
 using System;
 using System.Text;
-using Microsoft.AspNetCore.RateLimiting;
 using System.Threading.RateLimiting;
-using Microsoft.AspNetCore.Http;
-using RegistroCivilAPI.Services;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -70,8 +71,17 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
             ClockSkew = TimeSpan.Zero
         };
     });
+builder.Services.Configure<ForwardedHeadersOptions>(options =>
+{
+    options.ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto;
+    // Si conoces la IP fija de tu proxy/nginx, agrégala aquí para mayor seguridad:
+    // options.KnownProxies.Add(System.Net.IPAddress.Parse("IP_DE_TU_PROXY"));
+    options.ForwardLimit = 1;
+});
 
 var app = builder.Build();
+app.UseForwardedHeaders(); // debe ir muy al inicio, antes de CORS/RateLimiter/Auth
+
 
 app.UseExceptionHandler(errorApp =>
 {

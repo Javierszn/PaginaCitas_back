@@ -72,10 +72,15 @@ namespace RegistroCivilAPI.Controllers
             return Ok(registros);
         }
 
-       
+
         [HttpPost("Deshacer/{idBitacora}")]
-        public async Task<ActionResult> DeshacerCambio(int idBitacora, [FromBody] int idAdmin)
+        [Authorize(Roles = "Administrador,Super Administrador")]
+        public async Task<ActionResult> DeshacerCambio(int idBitacora)
         {
+            var idClaim = User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value;
+            if (idClaim == null || !int.TryParse(idClaim, out int idAdmin))
+                return Unauthorized();
+
             var log = await _context.BitacoraAuditoria.FindAsync(idBitacora);
             if (log == null) return NotFound(new { mensaje = "Registro no encontrado." });
 
@@ -85,9 +90,13 @@ namespace RegistroCivilAPI.Controllers
                 if (cita == null) return BadRequest(new { mensaje = "La cita original ya no existe." });
 
                 string estatusAnterior = log.ValorAnterior?.Replace("Estatus: ", "").Trim();
-
                 if (string.IsNullOrEmpty(estatusAnterior))
                     return BadRequest(new { mensaje = "No se pudo leer el valor anterior para restaurarlo." });
+
+                // ---- Validación contra los valores permitidos por CHK_EstatusCitas ----
+                var estatusValidos = new[] { "PROGRAMADA", "CONFIRMADA", "REPROGRAMADA", "ATENDIDA", "NO_ASISTIO", "CANCELADA" };
+                if (Array.IndexOf(estatusValidos, estatusAnterior) < 0)
+                    return BadRequest(new { mensaje = $"El valor anterior registrado ('{estatusAnterior}') no es un estatus válido y no puede restaurarse automáticamente." });
 
                 string estatusActual = cita.Estatus;
                 cita.Estatus = estatusAnterior;

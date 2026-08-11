@@ -155,23 +155,54 @@ namespace RegistroCivilAPI.Controllers
 
                 if (citaMismoTramite) return BadRequest(new { mensaje = "Alerta: Usted ya tiene una cita programada para este trámite exacto en este día." });
 
-                string folio = Guid.NewGuid().ToString().Substring(0, 8);
-                string ip = HttpContext.Connection.RemoteIpAddress?.ToString() ?? "Desconocida";
-
-                await _context.Database.ExecuteSqlRawAsync(
-                    "INSERT INTO Citas (id_cita, id_ciudadano, id_tramite, id_sede, fecha_hora_inicio, fecha_hora_fin, estatus, ip_origen, navegador, sistema_operativo) VALUES ({0}, {1}, {2}, {3}, {4}, {5}, 'PROGRAMADA', {6}, {7}, {8})",
-                    folio, ciudadano.IdCiudadano, solicitud.IdTramite, solicitud.IdSede, solicitud.FechaHora, solicitud.FechaHora.AddMinutes(30), ip, solicitud.Navegador ?? "Desconocido", solicitud.SistemaOperativo ?? "Desconocido");
-
+                // ---- CORRECCIÓN #6: usar la duración real del trámite, no 30 fijo ----
                 var tramiteEntity = await _context.Tramites.FindAsync(solicitud.IdTramite);
+                if (tramiteEntity == null) return BadRequest(new { mensaje = "Trámite no encontrado." });
+
+                int duracion = tramiteEntity.DuracionMinutos > 0 ? tramiteEntity.DuracionMinutos : 30;
+                DateTime fechaFin = solicitud.FechaHora.AddMinutes(duracion);
+
+                string folio;
+
+                // ---- CORRECCIÓN #7: transacción con aislamiento Serializable para evitar doble reserva ----
+                await using var transaction = await _context.Database.BeginTransactionAsync(System.Data.IsolationLevel.Serializable);
+                try
+                {
+                    bool solapada = await _context.Citas.AnyAsync(c =>
+                        c.IdSede == solicitud.IdSede &&
+                        (c.Estatus == "PROGRAMADA" || c.Estatus == "REPROGRAMADA") &&
+                        c.FechaHoraInicio < fechaFin &&
+                        c.FechaHoraFin > solicitud.FechaHora);
+
+                    if (solapada)
+                    {
+                        await transaction.RollbackAsync();
+                        return BadRequest(new { mensaje = "Ese horario acaba de ser tomado por otro ciudadano. Por favor seleccione otro horario disponible." });
+                    }
+
+                    folio = Guid.NewGuid().ToString().Substring(0, 8);
+                    string ip = HttpContext.Connection.RemoteIpAddress?.ToString() ?? "Desconocida";
+
+                    await _context.Database.ExecuteSqlRawAsync(
+                        "INSERT INTO Citas (id_cita, id_ciudadano, id_tramite, id_sede, fecha_hora_inicio, fecha_hora_fin, estatus, ip_origen, navegador, sistema_operativo) VALUES ({0}, {1}, {2}, {3}, {4}, {5}, 'PROGRAMADA', {6}, {7}, {8})",
+                        folio, ciudadano.IdCiudadano, solicitud.IdTramite, solicitud.IdSede, solicitud.FechaHora, fechaFin, ip, solicitud.Navegador ?? "Desconocido", solicitud.SistemaOperativo ?? "Desconocido");
+
+                    await transaction.CommitAsync();
+                }
+                catch
+                {
+                    await transaction.RollbackAsync();
+                    throw;
+                }
+
                 var sedeEntity = await _context.Sedes.FindAsync(solicitud.IdSede);
                 string nombreSede = sedeEntity?.Nombre ?? "Oficina del Registro Civil";
-                string requisitosTramite = tramiteEntity?.Requisitos ?? "Por favor comuníquese a la sede para confirmar los requisitos obligatorios.";
+                string requisitosTramite = tramiteEntity.Requisitos ?? "Por favor comuníquese a la sede para confirmar los requisitos obligatorios.";
 
                 string nombreCompleto = $"{ciudadano.Nombre} {ciudadano.PrimerApellido} {ciudadano.SegundoApellido}".Trim();
                 string identificadorParaCorreo = !string.IsNullOrWhiteSpace(nombreCompleto) ? nombreCompleto : $"CURP: {ciudadano.Curp}";
 
-                // <-- Mandamos llamar al nuevo servicio de correos
-                await _emailService.EnviarCorreoConfirmacionAsync(ciudadano.Correo, identificadorParaCorreo, folio, solicitud.FechaHora, tramiteEntity?.NombreTramite ?? "Trámite General", tramiteEntity?.Costo ?? 0, nombreSede, requisitosTramite);
+                await _emailService.EnviarCorreoConfirmacionAsync(ciudadano.Correo, identificadorParaCorreo, folio, solicitud.FechaHora, tramiteEntity.NombreTramite, tramiteEntity.Costo, nombreSede, requisitosTramite);
 
                 return Ok(new { mensaje = "Cita agendada con éxito", folio = folio });
             }
@@ -181,7 +212,6 @@ namespace RegistroCivilAPI.Controllers
                 return StatusCode(500, new { mensaje = "Error de base de datos", detalle = errorReal });
             }
         }
-
         [HttpGet("{folio}")]
         public async Task<ActionResult> ObtenerCita(string folio, [FromQuery] string captchaToken)
         {
@@ -242,20 +272,47 @@ namespace RegistroCivilAPI.Controllers
             if (cita.Estatus == "CANCELADA" || cita.Estatus == "ATENDIDA" || cita.Estatus == "NO_ASISTIO" || cita.Estatus == "REPROGRAMADA")
                 return BadRequest(new { mensaje = "Solo se permite reprogramar la cita una vez. El estatus actual es " + cita.Estatus });
 
-            cita.FechaHoraInicio = dto.NuevaFechaHora;
-            cita.FechaHoraFin = dto.NuevaFechaHora.AddMinutes(30);
-            cita.Estatus = "REPROGRAMADA";
-            await _context.SaveChangesAsync();
+            // ---- CORRECCIÓN #6: duración real del trámite, no 30 fijo ----
+            int duracion = cita.IdTramiteNavigation.DuracionMinutos > 0 ? cita.IdTramiteNavigation.DuracionMinutos : 30;
+            DateTime nuevaFechaFin = dto.NuevaFechaHora.AddMinutes(duracion);
+
+            // ---- CORRECCIÓN #7: evitar doble reserva al reagendar ----
+            await using var transaction = await _context.Database.BeginTransactionAsync(System.Data.IsolationLevel.Serializable);
+            try
+            {
+                bool solapada = await _context.Citas.AnyAsync(c =>
+                    c.IdCita != folio &&
+                    c.IdSede == cita.IdSede &&
+                    (c.Estatus == "PROGRAMADA" || c.Estatus == "REPROGRAMADA") &&
+                    c.FechaHoraInicio < nuevaFechaFin &&
+                    c.FechaHoraFin > dto.NuevaFechaHora);
+
+                if (solapada)
+                {
+                    await transaction.RollbackAsync();
+                    return BadRequest(new { mensaje = "Ese horario acaba de ser tomado por otro ciudadano. Por favor seleccione otro horario disponible." });
+                }
+
+                cita.FechaHoraInicio = dto.NuevaFechaHora;
+                cita.FechaHoraFin = nuevaFechaFin;
+                cita.Estatus = "REPROGRAMADA";
+                await _context.SaveChangesAsync();
+
+                await transaction.CommitAsync();
+            }
+            catch
+            {
+                await transaction.RollbackAsync();
+                throw;
+            }
 
             string nombreCompleto = $"{cita.IdCiudadanoNavigation.Nombre} {cita.IdCiudadanoNavigation.PrimerApellido} {cita.IdCiudadanoNavigation.SegundoApellido}".Trim();
             string identificadorParaCorreo = !string.IsNullOrWhiteSpace(nombreCompleto) ? nombreCompleto : $"CURP: {cita.IdCiudadanoNavigation.Curp}";
 
-            // <-- Y aquí también llamamos al nuevo servicio
             await _emailService.EnviarCorreoConfirmacionAsync(cita.IdCiudadanoNavigation.Correo, identificadorParaCorreo, folio, dto.NuevaFechaHora, cita.IdTramiteNavigation.NombreTramite, cita.IdTramiteNavigation.Costo, cita.IdSedeNavigation.Nombre, cita.IdTramiteNavigation.Requisitos, true);
 
             return Ok(new { mensaje = "Cita reagendada con éxito." });
         }
-
         [HttpGet("PorSede/{idSede}")]
         [Authorize]
         public async Task<ActionResult> ObtenerCitasPorSede(int idSede, [FromQuery] string? fecha = null, [FromQuery] string? busqueda = null)
