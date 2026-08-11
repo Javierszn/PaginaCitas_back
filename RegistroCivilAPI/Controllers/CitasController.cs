@@ -7,8 +7,9 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.AspNetCore.Authorization;
+using System.Security.Claims; 
 using RegistroCivilAPI.Models;
-using RegistroCivilAPI.Services; // <-- Importante
+using RegistroCivilAPI.Services;
 
 namespace RegistroCivilAPI.Controllers
 {
@@ -18,13 +19,13 @@ namespace RegistroCivilAPI.Controllers
     {
         private readonly RegistroCivilCitasContext _context;
         private readonly IConfiguration _config;
-        private readonly IEmailService _emailService; // <-- Se declara aquí
+        private readonly IEmailService _emailService;
 
         public CitasController(RegistroCivilCitasContext context, IConfiguration config, IEmailService emailService)
         {
             _context = context;
             _config = config;
-            _emailService = emailService; // <-- Se inyecta aquí
+            _emailService = emailService;
         }
 
         private async Task AutoActualizarInasistenciasAsync()
@@ -155,7 +156,6 @@ namespace RegistroCivilAPI.Controllers
 
                 if (citaMismoTramite) return BadRequest(new { mensaje = "Alerta: Usted ya tiene una cita programada para este trámite exacto en este día." });
 
-                // ---- CORRECCIÓN #6: usar la duración real del trámite, no 30 fijo ----
                 var tramiteEntity = await _context.Tramites.FindAsync(solicitud.IdTramite);
                 if (tramiteEntity == null) return BadRequest(new { mensaje = "Trámite no encontrado." });
 
@@ -164,7 +164,6 @@ namespace RegistroCivilAPI.Controllers
 
                 string folio;
 
-                // ---- CORRECCIÓN #7: transacción con aislamiento Serializable para evitar doble reserva ----
                 await using var transaction = await _context.Database.BeginTransactionAsync(System.Data.IsolationLevel.Serializable);
                 try
                 {
@@ -206,12 +205,12 @@ namespace RegistroCivilAPI.Controllers
 
                 return Ok(new { mensaje = "Cita agendada con éxito", folio = folio });
             }
-            catch (Exception ex)
+            catch (Exception)
             {
-                var errorReal = ex.InnerException != null ? ex.InnerException.Message : ex.Message;
-                return StatusCode(500, new { mensaje = "Error de base de datos", detalle = errorReal });
+                return StatusCode(500, new { mensaje = "Ha ocurrido un error interno en el servidor." });
             }
         }
+
         [HttpGet("{folio}")]
         public async Task<ActionResult> ObtenerCita(string folio, [FromQuery] string captchaToken)
         {
@@ -272,11 +271,9 @@ namespace RegistroCivilAPI.Controllers
             if (cita.Estatus == "CANCELADA" || cita.Estatus == "ATENDIDA" || cita.Estatus == "NO_ASISTIO" || cita.Estatus == "REPROGRAMADA")
                 return BadRequest(new { mensaje = "Solo se permite reprogramar la cita una vez. El estatus actual es " + cita.Estatus });
 
-            // ---- CORRECCIÓN #6: duración real del trámite, no 30 fijo ----
             int duracion = cita.IdTramiteNavigation.DuracionMinutos > 0 ? cita.IdTramiteNavigation.DuracionMinutos : 30;
             DateTime nuevaFechaFin = dto.NuevaFechaHora.AddMinutes(duracion);
 
-            // ---- CORRECCIÓN #7: evitar doble reserva al reagendar ----
             await using var transaction = await _context.Database.BeginTransactionAsync(System.Data.IsolationLevel.Serializable);
             try
             {
@@ -313,10 +310,20 @@ namespace RegistroCivilAPI.Controllers
 
             return Ok(new { mensaje = "Cita reagendada con éxito." });
         }
+
         [HttpGet("PorSede/{idSede}")]
         [Authorize]
         public async Task<ActionResult> ObtenerCitasPorSede(int idSede, [FromQuery] string? fecha = null, [FromQuery] string? busqueda = null)
         {
+            
+            var userSedeClaim = User.FindFirst("SedeId")?.Value;
+            var userRole = User.FindFirst(ClaimTypes.Role)?.Value;
+
+            if (userRole != "Super Administrador" && userSedeClaim != idSede.ToString())
+            {
+                return StatusCode(403, new { mensaje = "Acceso denegado. No tienes permisos para consultar las citas de otra sede." });
+            }
+
             await AutoActualizarInasistenciasAsync();
             var query = _context.Citas.Include(c => c.IdCiudadanoNavigation).Include(c => c.IdTramiteNavigation).Where(c => c.IdSede == idSede).AsQueryable();
 
@@ -332,6 +339,8 @@ namespace RegistroCivilAPI.Controllers
                 query = query.Where(c => c.FechaHoraInicio.Year == fechaFiltro.Year && c.FechaHoraInicio.Month == fechaFiltro.Month && c.FechaHoraInicio.Day == fechaFiltro.Day);
             }
 
+            bool isSuperAdmin = userRole == "Super Administrador";
+
             var citas = await query.OrderBy(c => c.FechaHoraInicio).Select(c => new {
                 folio = c.IdCita,
                 ciudadano = $"{c.IdCiudadanoNavigation.Nombre} {c.IdCiudadanoNavigation.PrimerApellido} {c.IdCiudadanoNavigation.SegundoApellido}".Trim(),
@@ -340,9 +349,10 @@ namespace RegistroCivilAPI.Controllers
                 fechaStr = c.FechaHoraInicio.ToString("dd/MM/yyyy"),
                 hora = c.FechaHoraInicio.ToString("HH:mm"),
                 estatus = c.Estatus,
-                ip = c.IpOrigen,
-                navegador = c.Navegador,
-                so = c.SistemaOperativo
+                
+                ip = isSuperAdmin ? c.IpOrigen : null,
+                navegador = isSuperAdmin ? c.Navegador : null,
+                so = isSuperAdmin ? c.SistemaOperativo : null
             }).ToListAsync();
             return Ok(citas);
         }
@@ -354,10 +364,39 @@ namespace RegistroCivilAPI.Controllers
             var cita = await _context.Citas.FirstOrDefaultAsync(c => c.IdCita == folio);
             if (cita == null) return NotFound(new { mensaje = "Cita no encontrada." });
 
+          
+            var usernameClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+            var userSedeClaim = User.FindFirst("SedeId")?.Value;
+            var userRole = User.FindFirst(ClaimTypes.Role)?.Value;
+
+            if (string.IsNullOrEmpty(usernameClaim))
+                return Unauthorized(new { mensaje = "Token inválido." });
+
+            if (userRole != "Super Administrador" && userSedeClaim != cita.IdSede.ToString())
+            {
+                return StatusCode(403, new { mensaje = "Acceso denegado. Esta cita pertenece a otra sede." });
+            }
+
+         
+            var usuarioReal = await _context.UsuariosInternos.FirstOrDefaultAsync(u => u.Username == usernameClaim);
+            if (usuarioReal == null)
+                return Unauthorized(new { mensaje = "Usuario no encontrado en el sistema." });
+
+            int idUsuarioReal = usuarioReal.IdUsuario;
+
             string valorAnterior = cita.Estatus;
             cita.Estatus = dto.NuevoEstatus;
 
-            var bitacora = new BitacoraAuditorium { IdUsuarioInterno = dto.IdUsuarioInterno, TablaAfectada = "Citas", AccionRealizada = "UPDATE", RegistroId = folio, ValorAnterior = $"Estatus: {valorAnterior}", ValorNuevo = $"Estatus: {dto.NuevoEstatus}", FechaCambio = DateTime.Now };
+            var bitacora = new BitacoraAuditorium
+            {
+                IdUsuarioInterno = idUsuarioReal, 
+                TablaAfectada = "Citas",
+                AccionRealizada = "UPDATE",
+                RegistroId = folio,
+                ValorAnterior = $"Estatus: {valorAnterior}",
+                ValorNuevo = $"Estatus: {dto.NuevoEstatus}",
+                FechaCambio = DateTime.Now
+            };
             _context.BitacoraAuditoria.Add(bitacora);
             await _context.SaveChangesAsync();
 

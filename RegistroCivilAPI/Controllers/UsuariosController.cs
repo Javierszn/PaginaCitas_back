@@ -80,8 +80,7 @@ namespace RegistroCivilAPI.Controllers
         [Authorize]
         public async Task<ActionResult> CambiarPassword(int id, [FromBody] PasswordDTO dto)
         {
-            // Un Super Administrador puede resetear la contraseña de cualquiera.
-            // Cualquier otro rol SOLO puede cambiar su propia contraseña.
+            
             var esSuperAdmin = User.IsInRole("Super Administrador");
             var idClaim = User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value;
 
@@ -116,7 +115,7 @@ namespace RegistroCivilAPI.Controllers
         }
 
         [HttpGet("Soporte")]
-        [Authorize]   // <-- antes era [AllowAnonymous]
+        [Authorize]  
         public async Task<ActionResult> GetUsuariosSoporte()
         {
             var usuarios = await _context.UsuariosInternos
@@ -183,7 +182,7 @@ namespace RegistroCivilAPI.Controllers
         }
     }
 
-    // --- DTOs CON VALIDACIÓN DE SEGURIDAD ---
+   
 
     public class NuevoUsuarioDTO
     {

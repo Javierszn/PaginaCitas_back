@@ -10,10 +10,8 @@ using System.Security.Claims;
 using System.Text;
 using System.Threading.Tasks;
 
-
 namespace RegistroCivilAPI.Controllers
 {
-
     [Route("api/[controller]")]
     [ApiController]
     public class AuthController : ControllerBase
@@ -36,20 +34,16 @@ namespace RegistroCivilAPI.Controllers
             if (user == null) return Unauthorized(new { mensaje = "Usuario o contraseña incorrectos." });
             if (user.Activo == false) return Unauthorized(new { mensaje = "Usuario bloqueado." });
 
+            
             bool isPasswordValid = false;
-
-            if (user.PasswordHash.StartsWith("$2a$") || user.PasswordHash.StartsWith("$2b$") || user.PasswordHash.StartsWith("$2y$"))
+            try
             {
                 isPasswordValid = BCrypt.Net.BCrypt.Verify(dto.Password, user.PasswordHash);
             }
-            else
+            catch
             {
-                if (user.PasswordHash == dto.Password)
-                {
-                    isPasswordValid = true;
-                    user.PasswordHash = BCrypt.Net.BCrypt.HashPassword(dto.Password);
-                    await _context.SaveChangesAsync();
-                }
+               
+                isPasswordValid = false;
             }
 
             if (!isPasswordValid) return Unauthorized(new { mensaje = "Usuario o contraseña incorrectos." });
@@ -68,7 +62,6 @@ namespace RegistroCivilAPI.Controllers
                 idAcceso = (int)await cmd.ExecuteScalarAsync();
             }
 
-           
             var tokenString = GenerarTokenJWT(user);
 
             return Ok(new
@@ -81,24 +74,33 @@ namespace RegistroCivilAPI.Controllers
                 sede = user.IdSedeNavigation.Nombre,
                 requiereCambioPassword = user.RequiereCambioPassword ?? true,
                 idAcceso = idAcceso,
-                token = tokenString 
+                token = tokenString
             });
         }
 
+        
         [HttpPost("logout/{idAcceso}")]
+        [Authorize]
         public async Task<ActionResult> Logout(int idAcceso)
         {
-            await _context.Database.ExecuteSqlRawAsync("UPDATE Registro_Accesos SET fecha_logout = GETDATE() WHERE id_acceso = {0}", idAcceso);
+            
+            var usernameClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+
+            if (string.IsNullOrEmpty(usernameClaim))
+                return Unauthorized();
+
+            await _context.Database.ExecuteSqlRawAsync(
+                "UPDATE Registro_Accesos SET fecha_logout = GETDATE() WHERE id_acceso = {0} AND username = {1}",
+                idAcceso, usernameClaim);
+
             return Ok();
         }
 
-       
         private string GenerarTokenJWT(UsuariosInterno user)
         {
             var jwtSettings = _config.GetSection("JwtSettings");
             var keyBytes = Encoding.UTF8.GetBytes(jwtSettings["SecretKey"]);
 
-            
             var claims = new[]
             {
                 new Claim(JwtRegisteredClaimNames.Sub, user.Username),

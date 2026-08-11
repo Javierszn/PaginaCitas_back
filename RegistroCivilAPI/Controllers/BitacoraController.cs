@@ -5,6 +5,7 @@ using System;
 using System.Linq;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Authorization;
+using System.Security.Claims; 
 
 namespace RegistroCivilAPI.Controllers
 {
@@ -20,7 +21,7 @@ namespace RegistroCivilAPI.Controllers
             _context = context;
         }
 
-        
+
         [HttpGet]
         public async Task<ActionResult> ObtenerBitacora([FromQuery] string? fecha = null, [FromQuery] string? busqueda = null)
         {
@@ -28,23 +29,19 @@ namespace RegistroCivilAPI.Controllers
                 .Include(b => b.IdUsuarioInternoNavigation)
                 .AsQueryable();
 
-            
             if (!string.IsNullOrWhiteSpace(busqueda))
             {
-               
                 busqueda = busqueda.ToLower();
 
                 query = query.Where(b => b.IdUsuarioInternoNavigation.NombreCompleto.ToLower().Contains(busqueda) ||
                                          b.TablaAfectada.ToLower().Contains(busqueda) ||
                                          b.AccionRealizada.ToLower().Contains(busqueda) ||
                                          b.RegistroId.ToLower().Contains(busqueda) ||
-                                       
                                          (b.ValorAnterior != null && b.ValorAnterior.Contains(busqueda)) ||
                                          (b.ValorNuevo != null && b.ValorNuevo.Contains(busqueda)));
             }
             else
             {
-                
                 if (!string.IsNullOrEmpty(fecha) && DateTime.TryParse(fecha, out DateTime parsedDate))
                 {
                     var fechaFiltro = parsedDate.Date;
@@ -77,9 +74,17 @@ namespace RegistroCivilAPI.Controllers
         [Authorize(Roles = "Administrador,Super Administrador")]
         public async Task<ActionResult> DeshacerCambio(int idBitacora)
         {
-            var idClaim = User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value;
-            if (idClaim == null || !int.TryParse(idClaim, out int idAdmin))
-                return Unauthorized();
+          
+            var usernameClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+            if (string.IsNullOrEmpty(usernameClaim))
+                return Unauthorized(new { mensaje = "Token inválido." });
+
+           
+            var usuarioReal = await _context.UsuariosInternos.FirstOrDefaultAsync(u => u.Username == usernameClaim);
+            if (usuarioReal == null)
+                return Unauthorized(new { mensaje = "Usuario no encontrado en el sistema." });
+
+            int idAdmin = usuarioReal.IdUsuario;
 
             var log = await _context.BitacoraAuditoria.FindAsync(idBitacora);
             if (log == null) return NotFound(new { mensaje = "Registro no encontrado." });
@@ -93,7 +98,7 @@ namespace RegistroCivilAPI.Controllers
                 if (string.IsNullOrEmpty(estatusAnterior))
                     return BadRequest(new { mensaje = "No se pudo leer el valor anterior para restaurarlo." });
 
-                // ---- Validación contra los valores permitidos por CHK_EstatusCitas ----
+                
                 var estatusValidos = new[] { "PROGRAMADA", "CONFIRMADA", "REPROGRAMADA", "ATENDIDA", "NO_ASISTIO", "CANCELADA" };
                 if (Array.IndexOf(estatusValidos, estatusAnterior) < 0)
                     return BadRequest(new { mensaje = $"El valor anterior registrado ('{estatusAnterior}') no es un estatus válido y no puede restaurarse automáticamente." });
@@ -103,7 +108,7 @@ namespace RegistroCivilAPI.Controllers
 
                 var nuevoLog = new BitacoraAuditorium
                 {
-                    IdUsuarioInterno = idAdmin,
+                    IdUsuarioInterno = idAdmin, 
                     TablaAfectada = "Citas",
                     AccionRealizada = "UPDATE",
                     RegistroId = cita.IdCita,
