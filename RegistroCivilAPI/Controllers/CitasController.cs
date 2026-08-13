@@ -313,48 +313,64 @@ namespace RegistroCivilAPI.Controllers
 
         [HttpGet("PorSede/{idSede}")]
         [Authorize]
-        public async Task<ActionResult> ObtenerCitasPorSede(int idSede, [FromQuery] string? fecha = null, [FromQuery] string? busqueda = null)
+        public async Task<ActionResult> ObtenerCitasPorSede(int idSede, [FromQuery] string? fecha = null, [FromQuery] string? busqueda = null, [FromQuery] int pagina = 1, [FromQuery] int registrosPorPagina = 50)
         {
-            
-            var userSedeClaim = User.FindFirst("SedeId")?.Value;
-            var userRole = User.FindFirst(ClaimTypes.Role)?.Value;
 
-            if (userRole != "Super Administrador" && userSedeClaim != idSede.ToString())
+            var userSedeClaim = User.FindFirst("SedeId")?.Value; 
+            var userRole = User.FindFirst(ClaimTypes.Role)?.Value; 
+
+            if (userRole != "Super Administrador" && userSedeClaim != idSede.ToString()) 
             {
-                return StatusCode(403, new { mensaje = "Acceso denegado. No tienes permisos para consultar las citas de otra sede." });
+                return StatusCode(403, new { mensaje = "Acceso denegado. No tienes permisos para consultar las citas de otra sede." }); 
             }
 
-            await AutoActualizarInasistenciasAsync();
-            var query = _context.Citas.Include(c => c.IdCiudadanoNavigation).Include(c => c.IdTramiteNavigation).Where(c => c.IdSede == idSede).AsQueryable();
+            await AutoActualizarInasistenciasAsync(); 
+            var query = _context.Citas.Include(c => c.IdCiudadanoNavigation).Include(c => c.IdTramiteNavigation).Where(c => c.IdSede == idSede).AsQueryable(); 
 
             if (!string.IsNullOrWhiteSpace(busqueda))
             {
-                busqueda = busqueda.ToLower();
-                query = query.Where(c => c.IdCita.ToLower().Contains(busqueda) || c.IdCiudadanoNavigation.Curp.ToLower().Contains(busqueda) || c.IdCiudadanoNavigation.Nombre.ToLower().Contains(busqueda) || c.IdCiudadanoNavigation.PrimerApellido.ToLower().Contains(busqueda));
+                busqueda = busqueda.ToLower(); 
+                query = query.Where(c => c.IdCita.ToLower().Contains(busqueda) || c.IdCiudadanoNavigation.Curp.ToLower().Contains(busqueda) || c.IdCiudadanoNavigation.Nombre.ToLower().Contains(busqueda) || c.IdCiudadanoNavigation.PrimerApellido.ToLower().Contains(busqueda)); //[cite: 12]
             }
             else
             {
                 DateTime fechaFiltro = DateTime.Today;
-                if (!string.IsNullOrEmpty(fecha) && DateTime.TryParse(fecha, out DateTime parsedDate)) fechaFiltro = parsedDate.Date;
-                query = query.Where(c => c.FechaHoraInicio.Year == fechaFiltro.Year && c.FechaHoraInicio.Month == fechaFiltro.Month && c.FechaHoraInicio.Day == fechaFiltro.Day);
+                if (!string.IsNullOrEmpty(fecha) && DateTime.TryParse(fecha, out DateTime parsedDate)) fechaFiltro = parsedDate.Date; 
+                query = query.Where(c => c.FechaHoraInicio.Year == fechaFiltro.Year && c.FechaHoraInicio.Month == fechaFiltro.Month && c.FechaHoraInicio.Day == fechaFiltro.Day); //[cite: 12]
             }
 
             bool isSuperAdmin = userRole == "Super Administrador";
 
-            var citas = await query.OrderBy(c => c.FechaHoraInicio).Select(c => new {
-                folio = c.IdCita,
-                ciudadano = $"{c.IdCiudadanoNavigation.Nombre} {c.IdCiudadanoNavigation.PrimerApellido} {c.IdCiudadanoNavigation.SegundoApellido}".Trim(),
-                curp = c.IdCiudadanoNavigation.Curp,
-                tramite = c.IdTramiteNavigation.NombreTramite,
-                fechaStr = c.FechaHoraInicio.ToString("dd/MM/yyyy"),
-                hora = c.FechaHoraInicio.ToString("HH:mm"),
-                estatus = c.Estatus,
-                
-                ip = isSuperAdmin ? c.IpOrigen : null,
-                navegador = isSuperAdmin ? c.Navegador : null,
-                so = isSuperAdmin ? c.SistemaOperativo : null
-            }).ToListAsync();
-            return Ok(citas);
+        
+            int totalRegistros = await query.CountAsync();
+            int totalPaginas = (int)Math.Ceiling(totalRegistros / (double)registrosPorPagina);
+            int registrosASaltar = (pagina - 1) * registrosPorPagina;
+
+            var citas = await query
+                .OrderBy(c => c.FechaHoraInicio)
+                .Skip(registrosASaltar)
+                .Take(registrosPorPagina)
+                .Select(c => new {
+                    folio = c.IdCita,
+                    ciudadano = $"{c.IdCiudadanoNavigation.Nombre} {c.IdCiudadanoNavigation.PrimerApellido} {c.IdCiudadanoNavigation.SegundoApellido}".Trim(),
+                    curp = c.IdCiudadanoNavigation.Curp,
+                    tramite = c.IdTramiteNavigation.NombreTramite,
+                    fechaStr = c.FechaHoraInicio.ToString("dd/MM/yyyy"),
+                    hora = c.FechaHoraInicio.ToString("HH:mm"),
+                    estatus = c.Estatus,
+                    ip = isSuperAdmin ? c.IpOrigen : null,
+                    navegador = isSuperAdmin ? c.Navegador : null,
+                    so = isSuperAdmin ? c.SistemaOperativo : null
+                }) 
+                .ToListAsync(); 
+
+            return Ok(new
+            {
+                totalRegistros = totalRegistros,
+                totalPaginas = totalPaginas,
+                paginaActual = pagina,
+                datos = citas
+            });
         }
 
         [HttpPut("{folio}/actualizarEstatus")]

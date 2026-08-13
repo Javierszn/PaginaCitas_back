@@ -23,15 +23,15 @@ namespace RegistroCivilAPI.Controllers
 
 
         [HttpGet]
-        public async Task<ActionResult> ObtenerBitacora([FromQuery] string? fecha = null, [FromQuery] string? busqueda = null)
+        public async Task<ActionResult> ObtenerBitacora([FromQuery] string? fecha = null, [FromQuery] string? busqueda = null, [FromQuery] int pagina = 1, [FromQuery] int registrosPorPagina = 50)
         {
             var query = _context.BitacoraAuditoria
                 .Include(b => b.IdUsuarioInternoNavigation)
-                .AsQueryable();
+                .AsQueryable(); 
 
             if (!string.IsNullOrWhiteSpace(busqueda))
             {
-                busqueda = busqueda.ToLower();
+                busqueda = busqueda.ToLower(); 
 
                 query = query.Where(b => b.IdUsuarioInternoNavigation.NombreCompleto.ToLower().Contains(busqueda) ||
                                          b.TablaAfectada.ToLower().Contains(busqueda) ||
@@ -44,16 +44,25 @@ namespace RegistroCivilAPI.Controllers
             {
                 if (!string.IsNullOrEmpty(fecha) && DateTime.TryParse(fecha, out DateTime parsedDate))
                 {
-                    var fechaFiltro = parsedDate.Date;
+                    var fechaFiltro = parsedDate.Date; 
                     query = query.Where(b => b.FechaCambio.HasValue &&
                                              b.FechaCambio.Value.Year == fechaFiltro.Year &&
                                              b.FechaCambio.Value.Month == fechaFiltro.Month &&
-                                             b.FechaCambio.Value.Day == fechaFiltro.Day);
+                                             b.FechaCambio.Value.Day == fechaFiltro.Day); 
                 }
             }
 
+           
+            int totalRegistros = await query.CountAsync();
+
+            
+            int totalPaginas = (int)Math.Ceiling(totalRegistros / (double)registrosPorPagina);
+            int registrosASaltar = (pagina - 1) * registrosPorPagina;
+
             var registros = await query
-                .OrderByDescending(b => b.FechaCambio)
+                .OrderByDescending(b => b.FechaCambio) 
+                .Skip(registrosASaltar)
+                .Take(registrosPorPagina)
                 .Select(b => new {
                     idBitacora = b.IdBitacora,
                     empleado = b.IdUsuarioInternoNavigation.NombreCompleto,
@@ -63,12 +72,18 @@ namespace RegistroCivilAPI.Controllers
                     valorAnterior = b.ValorAnterior,
                     valorNuevo = b.ValorNuevo,
                     fecha = b.FechaCambio
-                })
-                .ToListAsync();
+                }) 
+                .ToListAsync(); 
 
-            return Ok(registros);
+            
+            return Ok(new
+            {
+                totalRegistros = totalRegistros,
+                totalPaginas = totalPaginas,
+                paginaActual = pagina,
+                datos = registros
+            });
         }
-
 
         [HttpPost("Deshacer/{idBitacora}")]
         [Authorize(Roles = "Administrador,Super Administrador")]
