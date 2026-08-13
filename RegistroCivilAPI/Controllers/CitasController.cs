@@ -7,7 +7,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.AspNetCore.Authorization;
-using System.Security.Claims; 
+using System.Security.Claims;
 using RegistroCivilAPI.Models;
 using RegistroCivilAPI.Services;
 
@@ -254,7 +254,22 @@ namespace RegistroCivilAPI.Controllers
             if (cita.Estatus == "CANCELADA") return BadRequest(new { mensaje = "La cita ya se encuentra cancelada." });
             if (cita.FechaHoraInicio < DateTime.Now) return BadRequest(new { mensaje = "No se puede cancelar una cita de una fecha que ya pasó." });
 
-            cita.Estatus = "CANCELADA"; await _context.SaveChangesAsync();
+            cita.Estatus = "CANCELADA";
+
+            // --- INICIO BLINDAJE DE CONCURRENCIA ---
+            try
+            {
+                await _context.SaveChangesAsync();
+            }
+            catch (DbUpdateConcurrencyException)
+            {
+                return StatusCode(StatusCodes.Status409Conflict, new
+                {
+                    mensaje = "Alerta de Concurrencia: Otro empleado acaba de modificar el estatus de esta cita. Por favor, recargue la tabla para ver la información más reciente y evitar sobreescribir datos."
+                });
+            }
+            // --- FIN BLINDAJE DE CONCURRENCIA ---
+
             return Ok(new { mensaje = "Su cita ha sido cancelada con éxito. El espacio ha sido liberado." });
         }
 
@@ -293,10 +308,20 @@ namespace RegistroCivilAPI.Controllers
                 cita.FechaHoraInicio = dto.NuevaFechaHora;
                 cita.FechaHoraFin = nuevaFechaFin;
                 cita.Estatus = "REPROGRAMADA";
-                await _context.SaveChangesAsync();
 
+                await _context.SaveChangesAsync();
                 await transaction.CommitAsync();
             }
+            // --- INICIO BLINDAJE DE CONCURRENCIA ---
+            catch (DbUpdateConcurrencyException)
+            {
+                await transaction.RollbackAsync();
+                return StatusCode(StatusCodes.Status409Conflict, new
+                {
+                    mensaje = "Alerta de Concurrencia: Otro empleado acaba de modificar el estatus de esta cita. Por favor, recargue la tabla para ver la información más reciente y evitar sobreescribir datos."
+                });
+            }
+            // --- FIN BLINDAJE DE CONCURRENCIA ---
             catch
             {
                 await transaction.RollbackAsync();
@@ -316,32 +341,32 @@ namespace RegistroCivilAPI.Controllers
         public async Task<ActionResult> ObtenerCitasPorSede(int idSede, [FromQuery] string? fecha = null, [FromQuery] string? busqueda = null, [FromQuery] int pagina = 1, [FromQuery] int registrosPorPagina = 50)
         {
 
-            var userSedeClaim = User.FindFirst("SedeId")?.Value; 
-            var userRole = User.FindFirst(ClaimTypes.Role)?.Value; 
+            var userSedeClaim = User.FindFirst("SedeId")?.Value;
+            var userRole = User.FindFirst(ClaimTypes.Role)?.Value;
 
-            if (userRole != "Super Administrador" && userSedeClaim != idSede.ToString()) 
+            if (userRole != "Super Administrador" && userSedeClaim != idSede.ToString())
             {
-                return StatusCode(403, new { mensaje = "Acceso denegado. No tienes permisos para consultar las citas de otra sede." }); 
+                return StatusCode(403, new { mensaje = "Acceso denegado. No tienes permisos para consultar las citas de otra sede." });
             }
 
-            await AutoActualizarInasistenciasAsync(); 
-            var query = _context.Citas.Include(c => c.IdCiudadanoNavigation).Include(c => c.IdTramiteNavigation).Where(c => c.IdSede == idSede).AsQueryable(); 
+            await AutoActualizarInasistenciasAsync();
+            var query = _context.Citas.Include(c => c.IdCiudadanoNavigation).Include(c => c.IdTramiteNavigation).Where(c => c.IdSede == idSede).AsQueryable();
 
             if (!string.IsNullOrWhiteSpace(busqueda))
             {
-                busqueda = busqueda.ToLower(); 
-                query = query.Where(c => c.IdCita.ToLower().Contains(busqueda) || c.IdCiudadanoNavigation.Curp.ToLower().Contains(busqueda) || c.IdCiudadanoNavigation.Nombre.ToLower().Contains(busqueda) || c.IdCiudadanoNavigation.PrimerApellido.ToLower().Contains(busqueda)); //[cite: 12]
+                busqueda = busqueda.ToLower();
+                query = query.Where(c => c.IdCita.ToLower().Contains(busqueda) || c.IdCiudadanoNavigation.Curp.ToLower().Contains(busqueda) || c.IdCiudadanoNavigation.Nombre.ToLower().Contains(busqueda) || c.IdCiudadanoNavigation.PrimerApellido.ToLower().Contains(busqueda));
             }
             else
             {
                 DateTime fechaFiltro = DateTime.Today;
-                if (!string.IsNullOrEmpty(fecha) && DateTime.TryParse(fecha, out DateTime parsedDate)) fechaFiltro = parsedDate.Date; 
-                query = query.Where(c => c.FechaHoraInicio.Year == fechaFiltro.Year && c.FechaHoraInicio.Month == fechaFiltro.Month && c.FechaHoraInicio.Day == fechaFiltro.Day); //[cite: 12]
+                if (!string.IsNullOrEmpty(fecha) && DateTime.TryParse(fecha, out DateTime parsedDate)) fechaFiltro = parsedDate.Date;
+                query = query.Where(c => c.FechaHoraInicio.Year == fechaFiltro.Year && c.FechaHoraInicio.Month == fechaFiltro.Month && c.FechaHoraInicio.Day == fechaFiltro.Day);
             }
 
             bool isSuperAdmin = userRole == "Super Administrador";
 
-        
+
             int totalRegistros = await query.CountAsync();
             int totalPaginas = (int)Math.Ceiling(totalRegistros / (double)registrosPorPagina);
             int registrosASaltar = (pagina - 1) * registrosPorPagina;
@@ -361,8 +386,8 @@ namespace RegistroCivilAPI.Controllers
                     ip = isSuperAdmin ? c.IpOrigen : null,
                     navegador = isSuperAdmin ? c.Navegador : null,
                     so = isSuperAdmin ? c.SistemaOperativo : null
-                }) 
-                .ToListAsync(); 
+                })
+                .ToListAsync();
 
             return Ok(new
             {
@@ -380,7 +405,6 @@ namespace RegistroCivilAPI.Controllers
             var cita = await _context.Citas.FirstOrDefaultAsync(c => c.IdCita == folio);
             if (cita == null) return NotFound(new { mensaje = "Cita no encontrada." });
 
-          
             var usernameClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
             var userSedeClaim = User.FindFirst("SedeId")?.Value;
             var userRole = User.FindFirst(ClaimTypes.Role)?.Value;
@@ -393,7 +417,6 @@ namespace RegistroCivilAPI.Controllers
                 return StatusCode(403, new { mensaje = "Acceso denegado. Esta cita pertenece a otra sede." });
             }
 
-         
             var usuarioReal = await _context.UsuariosInternos.FirstOrDefaultAsync(u => u.Username == usernameClaim);
             if (usuarioReal == null)
                 return Unauthorized(new { mensaje = "Usuario no encontrado en el sistema." });
@@ -405,7 +428,7 @@ namespace RegistroCivilAPI.Controllers
 
             var bitacora = new BitacoraAuditorium
             {
-                IdUsuarioInterno = idUsuarioReal, 
+                IdUsuarioInterno = idUsuarioReal,
                 TablaAfectada = "Citas",
                 AccionRealizada = "UPDATE",
                 RegistroId = folio,
@@ -414,7 +437,21 @@ namespace RegistroCivilAPI.Controllers
                 FechaCambio = DateTime.Now
             };
             _context.BitacoraAuditoria.Add(bitacora);
-            await _context.SaveChangesAsync();
+
+
+            // --- INICIO BLINDAJE DE CONCURRENCIA ---
+            try
+            {
+                await _context.SaveChangesAsync();
+            }
+            catch (DbUpdateConcurrencyException)
+            {
+                return StatusCode(StatusCodes.Status409Conflict, new
+                {
+                    mensaje = "Alerta de Concurrencia: Otro empleado acaba de modificar el estatus de esta cita. Por favor, recargue la tabla para ver la información más reciente y evitar sobreescribir datos."
+                });
+            }
+            // --- FIN BLINDAJE DE CONCURRENCIA ---
 
             return Ok(new { mensaje = $"La cita se ha marcado como {dto.NuevoEstatus} correctamente." });
         }

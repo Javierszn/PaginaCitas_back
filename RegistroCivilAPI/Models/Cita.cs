@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.ComponentModel.DataAnnotations;
 using System.ComponentModel.DataAnnotations.Schema; 
 
 namespace RegistroCivilAPI.Models;
@@ -17,7 +18,8 @@ public partial class Cita
     public virtual Ciudadano IdCiudadanoNavigation { get; set; } = null!;
     public virtual Sede IdSedeNavigation { get; set; } = null!;
     public virtual Tramite IdTramiteNavigation { get; set; } = null!;
-
+    [Timestamp]
+    public byte[] RowVersion { get; set; }
 
     [Column("ip_origen")]
     public string? IpOrigen { get; set; }
