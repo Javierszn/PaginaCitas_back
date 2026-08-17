@@ -20,12 +20,13 @@ namespace RegistroCivilAPI.Controllers
         private readonly RegistroCivilCitasContext _context;
         private readonly IConfiguration _config;
         private readonly IEmailService _emailService;
-
-        public CitasController(RegistroCivilCitasContext context, IConfiguration config, IEmailService emailService)
+        private readonly IHttpClientFactory _httpClientFactory;
+        public CitasController(RegistroCivilCitasContext context, IConfiguration config, IEmailService emailService, IHttpClientFactory httpClientFactory)
         {
             _context = context;
             _config = config;
             _emailService = emailService;
+            _httpClientFactory = httpClientFactory;
         }
 
         private async Task AutoActualizarInasistenciasAsync()
@@ -462,7 +463,7 @@ namespace RegistroCivilAPI.Controllers
 
             var secret = _config["RecaptchaSettings:SecretKey"];
 
-            using var client = new HttpClient();
+            var client = _httpClientFactory.CreateClient();
             var response = await client.PostAsync($"https://www.google.com/recaptcha/api/siteverify?secret={secret}&response={token}", null);
             var json = await response.Content.ReadAsStringAsync();
             using var doc = System.Text.Json.JsonDocument.Parse(json);

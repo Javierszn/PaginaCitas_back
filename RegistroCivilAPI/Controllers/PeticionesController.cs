@@ -5,7 +5,9 @@ using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Authorization;
-using System.Security.Claims; 
+using System.Security.Claims;
+// Necesario para HttpClient
+using System.Net.Http;
 
 namespace RegistroCivilAPI.Controllers
 {
@@ -14,10 +16,14 @@ namespace RegistroCivilAPI.Controllers
     public class PeticionesController : ControllerBase
     {
         private readonly RegistroCivilCitasContext _context;
+        private readonly IHttpClientFactory _httpClientFactory;
+        private readonly IConfiguration _config;
 
-        public PeticionesController(RegistroCivilCitasContext context)
+        public PeticionesController(RegistroCivilCitasContext context, IHttpClientFactory httpClientFactory, IConfiguration config)
         {
             _context = context;
+            _httpClientFactory = httpClientFactory;
+            _config = config;
         }
 
         [HttpGet]
@@ -55,7 +61,7 @@ namespace RegistroCivilAPI.Controllers
         [Authorize]
         public async Task<ActionResult> GetMisPeticiones(string username)
         {
-            
+
             var tokenUsername = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
             var userRole = User.FindFirst(ClaimTypes.Role)?.Value;
 
@@ -96,17 +102,37 @@ namespace RegistroCivilAPI.Controllers
             return Ok(peticiones);
         }
 
+        // =======================================================
+        // BLINDAJE CON reCAPTCHA APLICADO AQUÍ
+        // =======================================================
         [HttpPost]
         [AllowAnonymous]
-        public async Task<ActionResult> CreatePeticion([FromBody] NuevaPeticionDTO dto)
+        public async Task<ActionResult> CreatePeticion([FromQuery] string captchaToken, [FromBody] NuevaPeticionDTO dto)
         {
+            if (string.IsNullOrEmpty(captchaToken))
+            {
+                return BadRequest(new { mensaje = "Falta el token de seguridad reCAPTCHA." });
+            }
+
+            // ¡EL FIX ESTÁ AQUÍ! 
+            // Ahora coincide exactamente con el nombre de tu secrets.json (RecaptchaSettings)
+            var secretKey = _config["RecaptchaSettings:SecretKey"];
+
+            var client = _httpClientFactory.CreateClient();
+            var response = await client.PostAsync($"https://www.google.com/recaptcha/api/siteverify?secret={secretKey}&response={captchaToken}", null);
+
+            var jsonString = await response.Content.ReadAsStringAsync();
+            if (!jsonString.Contains("\"success\": true"))
+            {
+                return BadRequest(new { mensaje = "Validación reCAPTCHA fallida. Bot detectado." });
+            }
+
             await _context.Database.ExecuteSqlRawAsync(
                 "INSERT INTO Peticiones_Soporte (username_solicitante, tipo_peticion, descripcion) VALUES ({0}, {1}, {2})",
                 dto.Username, dto.Tipo, dto.Descripcion);
 
             return Ok(new { mensaje = "Tu solicitud ha sido enviada al departamento de Sistemas. Pronto será atendida." });
         }
-
         [HttpPut("{id}/resolver")]
         [Authorize(Roles = "Super Administrador")]
         public async Task<ActionResult> ResolverPeticion(int id, [FromBody] RespuestaDTO dto)
@@ -129,7 +155,7 @@ namespace RegistroCivilAPI.Controllers
         [Authorize]
         public async Task<ActionResult> MarcarLeidasUsuario(string username)
         {
-            
+
             var tokenUsername = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
             var userRole = User.FindFirst(ClaimTypes.Role)?.Value;
 

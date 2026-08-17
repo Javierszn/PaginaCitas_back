@@ -76,6 +76,8 @@ builder.Services.Configure<ForwardedHeadersOptions>(options =>
     options.ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto;
     options.ForwardLimit = 1;
 });
+// Habilita el reciclaje inteligente de conexiones HTTP
+builder.Services.AddHttpClient();
 
 var app = builder.Build();
 
@@ -95,7 +97,27 @@ app.UseExceptionHandler(errorApp =>
 app.UseCors("PermitirTodo");
 app.UseRateLimiter();             
 app.UseAuthentication();      
-app.UseAuthorization();         
+app.UseAuthorization();
+
+app.Use(async (context, next) =>
+{
+    // 1. Evita que disfracen archivos maliciosos (MIME Sniffing)
+    context.Response.Headers["X-Content-Type-Options"] = "nosniff";
+
+    // 2. Bloquea que otra página meta tu sitio web en un Iframe (Clickjacking)
+    context.Response.Headers["X-Frame-Options"] = "DENY";
+
+    // 3. Filtro básico contra ataques XSS en navegadores antiguos
+    context.Response.Headers["X-XSS-Protection"] = "1; mode=block";
+
+    // 4. Protege la información de la URL al navegar a sitios externos
+    context.Response.Headers["Referrer-Policy"] = "strict-origin-when-cross-origin";
+
+    // 5. Política de Seguridad de Contenido (CSP) básica para evitar Iframes no autorizados
+    context.Response.Headers["Content-Security-Policy"] = "frame-ancestors 'none';";
+
+    await next();
+});
 
 app.MapControllers();
 
