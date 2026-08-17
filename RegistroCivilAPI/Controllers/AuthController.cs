@@ -34,20 +34,52 @@ namespace RegistroCivilAPI.Controllers
             if (user == null) return Unauthorized(new { mensaje = "Usuario o contraseña incorrectos." });
             if (user.Activo == false) return Unauthorized(new { mensaje = "Usuario bloqueado." });
 
-            
+            // ====================================================================
+            // ESCUDO 1: VERIFICAR SI LA CUENTA ESTÁ BLOQUEADA ANTES DE REVISAR CONTRASEÑAS
+            // ====================================================================
+            if (user.BloqueadoHasta.HasValue && user.BloqueadoHasta.Value > DateTime.Now)
+            {
+                var tiempoRestante = (int)(user.BloqueadoHasta.Value - DateTime.Now).TotalMinutes;
+                return StatusCode(403, new { mensaje = $"Por seguridad, la cuenta está bloqueada. Intente de nuevo en {tiempoRestante + 1} minutos." });
+            }
+
             bool isPasswordValid = false;
             try
             {
+                // Validación original con BCrypt conservada
                 isPasswordValid = BCrypt.Net.BCrypt.Verify(dto.Password, user.PasswordHash);
             }
             catch
             {
-               
                 isPasswordValid = false;
             }
 
-            if (!isPasswordValid) return Unauthorized(new { mensaje = "Usuario o contraseña incorrectos." });
+            if (!isPasswordValid)
+            {
+                // ====================================================================
+                // ESCUDO 2: CONTABILIZAR EL ERROR Y BLOQUEAR SI LLEGA A 3
+                // ====================================================================
+                user.IntentosFallidos += 1;
 
+                if (user.IntentosFallidos >= 3)
+                {
+                    user.BloqueadoHasta = DateTime.Now.AddMinutes(15);
+                    await _context.SaveChangesAsync();
+                    return StatusCode(403, new { mensaje = "Cuenta bloqueada temporalmente por exceso de intentos fallidos (15 min)." });
+                }
+
+                await _context.SaveChangesAsync();
+                return Unauthorized(new { mensaje = $"Usuario o contraseña incorrectos. Te quedan {3 - user.IntentosFallidos} intento(s)." });
+            }
+
+            // ====================================================================
+            // ESCUDO 3: SI EL LOGIN ES EXITOSO, REINICIAMOS LOS CONTADORES A CERO
+            // ====================================================================
+            user.IntentosFallidos = 0;
+            user.BloqueadoHasta = null;
+            await _context.SaveChangesAsync();
+
+            // Consulta original conservada para registrar el acceso
             int idAcceso = 0;
             using (var cmd = _context.Database.GetDbConnection().CreateCommand())
             {
@@ -64,6 +96,7 @@ namespace RegistroCivilAPI.Controllers
 
             var tokenString = GenerarTokenJWT(user);
 
+            // Payload original conservado
             return Ok(new
             {
                 idUsuario = user.IdUsuario,
@@ -78,12 +111,12 @@ namespace RegistroCivilAPI.Controllers
             });
         }
 
-        
+
         [HttpPost("logout/{idAcceso}")]
         [Authorize]
         public async Task<ActionResult> Logout(int idAcceso)
         {
-            
+
             var usernameClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
 
             if (string.IsNullOrEmpty(usernameClaim))

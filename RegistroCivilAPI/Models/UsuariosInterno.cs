@@ -20,5 +20,7 @@ namespace RegistroCivilAPI.Models
         public virtual Role IdRolNavigation { get; set; } = null!;
         public virtual Sede IdSedeNavigation { get; set; } = null!;
         public virtual ICollection<BitacoraAuditorium> BitacoraAuditoria { get; set; } = new List<BitacoraAuditorium>();
+        public int IntentosFallidos { get; set; }
+        public DateTime? BloqueadoHasta { get; set; }
     }
 }
