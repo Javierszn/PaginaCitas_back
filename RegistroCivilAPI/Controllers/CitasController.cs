@@ -21,6 +21,8 @@ namespace RegistroCivilAPI.Controllers
         private readonly IConfiguration _config;
         private readonly IEmailService _emailService;
         private readonly IHttpClientFactory _httpClientFactory;
+        private TimeOnly horaActual;
+
         public CitasController(RegistroCivilCitasContext context, IConfiguration config, IEmailService emailService, IHttpClientFactory httpClientFactory)
         {
             _context = context;
@@ -76,13 +78,24 @@ namespace RegistroCivilAPI.Controllers
                 .Select(c => TimeOnly.FromDateTime(c.FechaHoraInicio)).ToListAsync();
 
             var horasDisponibles = new List<string>();
-            TimeOnly horaActual = horarioSede.HoraApertura;
-            TimeOnly now = TimeOnly.FromDateTime(DateTime.Now);
+            // 1. Calcular la hora real de México (UTC -6)
+            DateTime horaMexico = DateTime.UtcNow.AddHours(-6);
+            TimeOnly now = TimeOnly.FromDateTime(horaMexico);
+            DateTime hoyMexico = horaMexico.Date;
 
             while (horaActual < horarioSede.HoraCierre)
             {
-                if (fecha.Date == DateTime.Today && horaActual <= now) { horaActual = horaActual.AddMinutes(intervalo); continue; }
-                if (!horasOcupadas.Contains(horaActual)) { horasDisponibles.Add(horaActual.ToString("HH:mm")); }
+                // 2. Comparamos contra el "hoy" de México, no el de Inglaterra
+                if (fecha.Date == hoyMexico && horaActual <= now)
+                {
+                    horaActual = horaActual.AddMinutes(intervalo);
+                    continue;
+                }
+
+                if (!horasOcupadas.Contains(horaActual))
+                {
+                    horasDisponibles.Add(horaActual.ToString("HH:mm"));
+                }
                 horaActual = horaActual.AddMinutes(intervalo);
             }
             return Ok(horasDisponibles);

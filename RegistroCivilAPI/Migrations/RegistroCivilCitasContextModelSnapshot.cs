@@ -531,6 +531,9 @@ namespace RegistroCivilAPI.Migrations
                         .HasDefaultValue(true)
                         .HasColumnName("activo");
 
+                    b.Property<DateTime?>("BloqueadoHasta")
+                        .HasColumnType("datetime2");
+
                     b.Property<int>("IdRol")
                         .HasColumnType("int")
                         .HasColumnName("id_rol");
@@ -538,6 +541,9 @@ namespace RegistroCivilAPI.Migrations
                     b.Property<int>("IdSede")
                         .HasColumnType("int")
                         .HasColumnName("id_sede");
+
+                    b.Property<int>("IntentosFallidos")
+                        .HasColumnType("int");
 
                     b.Property<string>("NombreCompleto")
                         .IsRequired()

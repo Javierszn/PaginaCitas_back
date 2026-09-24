@@ -12,8 +12,8 @@ using RegistroCivilAPI.Models;
 namespace RegistroCivilAPI.Migrations
 {
     [DbContext(typeof(RegistroCivilCitasContext))]
-    [Migration("20260813174429_ConcurrenciaCitas")]
-    partial class ConcurrenciaCitas
+    [Migration("20260923164315_InicialCloud")]
+    partial class InicialCloud
     {
         /// <inheritdoc />
         protected override void BuildTargetModel(ModelBuilder modelBuilder)
@@ -534,6 +534,9 @@ namespace RegistroCivilAPI.Migrations
                         .HasDefaultValue(true)
                         .HasColumnName("activo");
 
+                    b.Property<DateTime?>("BloqueadoHasta")
+                        .HasColumnType("datetime2");
+
                     b.Property<int>("IdRol")
                         .HasColumnType("int")
                         .HasColumnName("id_rol");
@@ -541,6 +544,9 @@ namespace RegistroCivilAPI.Migrations
                     b.Property<int>("IdSede")
                         .HasColumnType("int")
                         .HasColumnName("id_sede");
+
+                    b.Property<int>("IntentosFallidos")
+                        .HasColumnType("int");
 
                     b.Property<string>("NombreCompleto")
                         .IsRequired()
