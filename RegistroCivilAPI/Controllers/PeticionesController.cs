@@ -107,25 +107,24 @@ namespace RegistroCivilAPI.Controllers
         // =======================================================
         [HttpPost]
         [AllowAnonymous]
-        public async Task<ActionResult> CreatePeticion([FromQuery] string? captchaToken, [FromBody] NuevaPeticionDTO dto)
+        public async Task<ActionResult> CreatePeticion([FromQuery] string captchaToken, [FromBody] NuevaPeticionDTO dto)
         {
-            // Exentamos la validación de reCAPTCHA si es un empleado recuperando su contraseña desde el login
-            if (dto.Tipo != "RECUPERAR CONTRASEÑA")
+            if (string.IsNullOrEmpty(captchaToken))
             {
-                if (string.IsNullOrEmpty(captchaToken))
-                {
-                    return BadRequest(new { mensaje = "Falta el token de seguridad reCAPTCHA." });
-                }
+                return BadRequest(new { mensaje = "Falta el token de seguridad reCAPTCHA." });
+            }
 
-                var secretKey = _config["RecaptchaSettings:SecretKey"];
-                var client = _httpClientFactory.CreateClient();
-                var response = await client.PostAsync($"https://www.google.com/recaptcha/api/siteverify?secret={secretKey}&response={captchaToken}", null);
+            // ¡EL FIX ESTÁ AQUÍ! 
+            // Ahora coincide exactamente con el nombre de tu secrets.json (RecaptchaSettings)
+            var secretKey = _config["RecaptchaSettings:SecretKey"];
 
-                var jsonString = await response.Content.ReadAsStringAsync();
-                if (!jsonString.Contains("\"success\": true"))
-                {
-                    return BadRequest(new { mensaje = "Validación reCAPTCHA fallida. Bot detectado." });
-                }
+            var client = _httpClientFactory.CreateClient();
+            var response = await client.PostAsync($"https://www.google.com/recaptcha/api/siteverify?secret={secretKey}&response={captchaToken}", null);
+
+            var jsonString = await response.Content.ReadAsStringAsync();
+            if (!jsonString.Contains("\"success\": true"))
+            {
+                return BadRequest(new { mensaje = "Validación reCAPTCHA fallida. Bot detectado." });
             }
 
             await _context.Database.ExecuteSqlRawAsync(
