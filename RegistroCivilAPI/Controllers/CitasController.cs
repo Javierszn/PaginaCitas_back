@@ -21,8 +21,6 @@ namespace RegistroCivilAPI.Controllers
         private readonly IConfiguration _config;
         private readonly IEmailService _emailService;
         private readonly IHttpClientFactory _httpClientFactory;
-        private TimeOnly horaActual;
-
         public CitasController(RegistroCivilCitasContext context, IConfiguration config, IEmailService emailService, IHttpClientFactory httpClientFactory)
         {
             _context = context;
@@ -39,59 +37,64 @@ namespace RegistroCivilAPI.Controllers
         }
 
         [HttpGet("Horarios")]
-        public async Task<ActionResult<IEnumerable<string>>> ObtenerHorariosDisponibles(int idSede, int idTramite, DateTime fecha)
+        public async Task<ActionResult<IEnumerable<string>>> ObtenerHorariosDisponibles(int idSede, int idTramite, [FromQuery] string fecha)
         {
-            if (fecha.Date < DateTime.Today) return Ok(new List<string>());
+            // 1. Forzamos el parseo seguro sin zona horaria
+            if (!DateTime.TryParse(fecha, out DateTime fechaCita))
+                return BadRequest("Formato de fecha inválido.");
+
+            if (fechaCita.Date < DateTime.Today) return Ok(new List<string>());
 
             var config = await _context.ConfiguracionAgendas.FirstOrDefaultAsync(c => c.Id == 1);
             if (config != null)
             {
-                if (fecha.Date < config.FechaInicio.Date || fecha.Date > config.FechaFin.Date)
+                if (fechaCita.Date < config.FechaInicio.Date || fechaCita.Date > config.FechaFin.Date)
                     return Ok(new List<string>());
             }
 
-            var inhabil = await _context.DiasInhabiles.AnyAsync(d => d.FechaBloqueada == DateOnly.FromDateTime(fecha) && (d.IdSede == idSede || d.IdSede == null));
+            var inhabil = await _context.DiasInhabiles.AnyAsync(d => d.FechaBloqueada == DateOnly.FromDateTime(fechaCita) && (d.IdSede == idSede || d.IdSede == null));
             if (inhabil) return Ok(new List<string>());
 
-            byte diaSemana = (byte)(fecha.DayOfWeek == DayOfWeek.Sunday ? 7 : (int)fecha.DayOfWeek);
+            byte diaSemana = (byte)(fechaCita.DayOfWeek == DayOfWeek.Sunday ? 7 : (int)fechaCita.DayOfWeek);
             var horarioSede = await _context.HorariosSedes.FirstOrDefaultAsync(h => h.IdSede == idSede && h.DiaSemana == diaSemana);
             if (horarioSede == null) return Ok(new List<string>());
+
             var tramite = await _context.Tramites.FindAsync(idTramite);
             if (tramite == null) return BadRequest("Trámite no encontrado");
 
-            if (tramite.FechaInicioPermitida.HasValue && fecha.Date < tramite.FechaInicioPermitida.Value.Date)
+            if (tramite.FechaInicioPermitida.HasValue && fechaCita.Date < tramite.FechaInicioPermitida.Value.Date)
                 return Ok(new List<string>());
 
-            if (tramite.FechaFinPermitida.HasValue && fecha.Date > tramite.FechaFinPermitida.Value.Date)
+            if (tramite.FechaFinPermitida.HasValue && fechaCita.Date > tramite.FechaFinPermitida.Value.Date)
                 return Ok(new List<string>());
 
             int intervalo = tramite.DuracionMinutos > 0 ? tramite.DuracionMinutos : 30;
             int limiteDiario = tramite.LimiteDiarioSede > 0 ? tramite.LimiteDiarioSede : 999;
 
             var cantidadCitasDia = await _context.Citas
-                .CountAsync(c => c.IdSede == idSede && c.IdTramite == idTramite && c.FechaHoraInicio.Date == fecha.Date && (c.Estatus == "PROGRAMADA" || c.Estatus == "REPROGRAMADA"));
+                .CountAsync(c => c.IdSede == idSede && c.IdTramite == idTramite && c.FechaHoraInicio.Date == fechaCita.Date && (c.Estatus == "PROGRAMADA" || c.Estatus == "REPROGRAMADA"));
 
             if (cantidadCitasDia >= limiteDiario) return Ok(new List<string>());
 
             var horasOcupadas = await _context.Citas
-                .Where(c => c.IdSede == idSede && c.FechaHoraInicio.Date == fecha.Date && (c.Estatus == "PROGRAMADA" || c.Estatus == "REPROGRAMADA"))
+                .Where(c => c.IdSede == idSede && c.FechaHoraInicio.Date == fechaCita.Date && (c.Estatus == "PROGRAMADA" || c.Estatus == "REPROGRAMADA"))
                 .Select(c => TimeOnly.FromDateTime(c.FechaHoraInicio)).ToListAsync();
 
             var horasDisponibles = new List<string>();
-            // 1. Calcular la hora real de México (UTC -6)
+            TimeOnly horaActual = horarioSede.HoraApertura;
+
+            // Corrección UTC-6 para la nube de Railway
             DateTime horaMexico = DateTime.UtcNow.AddHours(-6);
             TimeOnly now = TimeOnly.FromDateTime(horaMexico);
             DateTime hoyMexico = horaMexico.Date;
 
             while (horaActual < horarioSede.HoraCierre)
             {
-                // 2. Comparamos contra el "hoy" de México, no el de Inglaterra
-                if (fecha.Date == hoyMexico && horaActual <= now)
+                if (fechaCita.Date == hoyMexico && horaActual <= now)
                 {
                     horaActual = horaActual.AddMinutes(intervalo);
                     continue;
                 }
-
                 if (!horasOcupadas.Contains(horaActual))
                 {
                     horasDisponibles.Add(horaActual.ToString("HH:mm"));
