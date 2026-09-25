@@ -1,75 +1,137 @@
 ﻿using System;
+using System.Globalization;
+using System.Linq;
 using System.Net;
-using System.Net.Mail;
+using System.Net.Http;
+using System.Net.Http.Headers;
+using System.Net.Http.Json;
+using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging;
 
 namespace RegistroCivilAPI.Services
 {
     public interface IEmailService
     {
-        Task EnviarCorreoConfirmacionAsync(string correoDestino, string identificador, string folio, DateTime fechaHora, string tramite, decimal costo, string sede, string requisitos, bool esReagendada = false);
+        Task EnviarCorreoConfirmacionAsync(
+            string correoDestino,
+            string identificador,
+            string folio,
+            DateTime fechaHora,
+            string tramite,
+            decimal costo,
+            string sede,
+            string requisitos,
+            bool esReagendada = false);
     }
 
     public class EmailService : IEmailService
     {
         private readonly IConfiguration _config;
+        private readonly IHttpClientFactory _httpClientFactory;
+        private readonly ILogger<EmailService> _logger;
 
-        public EmailService(IConfiguration config)
+        public EmailService(
+            IConfiguration config,
+            IHttpClientFactory httpClientFactory,
+            ILogger<EmailService> logger)
         {
             _config = config;
+            _httpClientFactory = httpClientFactory;
+            _logger = logger;
         }
 
-        public async Task EnviarCorreoConfirmacionAsync(string correoDestino, string identificador, string folio, DateTime fechaHora, string tramite, decimal costo, string sede, string requisitos, bool esReagendada = false)
+        public async Task EnviarCorreoConfirmacionAsync(
+            string correoDestino,
+            string identificador,
+            string folio,
+            DateTime fechaHora,
+            string tramite,
+            decimal costo,
+            string sede,
+            string requisitos,
+            bool esReagendada = false)
         {
+            // Se conserva el nombre PasswordApp para no cambiar tus variables existentes.
+            // El valor debe ser una API key de Brevo, no la contraseña de Gmail.
+            string apiKey = _config["EmailSettings:PasswordApp"] ?? string.Empty;
+            string correoOrigen = _config["EmailSettings:Correo"] ?? string.Empty;
+
+            if (string.IsNullOrWhiteSpace(apiKey))
+            {
+                _logger.LogError(
+                    "No se envió el correo: falta configurar EmailSettings:PasswordApp.");
+                return;
+            }
+
+            if (string.IsNullOrWhiteSpace(correoOrigen))
+            {
+                _logger.LogError(
+                    "No se envió el correo: falta configurar EmailSettings:Correo.");
+                return;
+            }
+
+            if (string.IsNullOrWhiteSpace(correoDestino))
+            {
+                _logger.LogError(
+                    "No se envió el correo: el correo destinatario está vacío.");
+                return;
+            }
+
             try
             {
-                string correoOrigen = _config["EmailSettings:Correo"];
-                string passwordApp = _config["EmailSettings:PasswordApp"];
+                string listaRequisitosHtml = string.Empty;
 
-                if (string.IsNullOrEmpty(correoOrigen) || string.IsNullOrEmpty(passwordApp)) return;
-
-                using var smtpClient = new SmtpClient("smtp.gmail.com")
-                {
-                    Port = 587,
-                    DeliveryMethod = SmtpDeliveryMethod.Network,
-                    // IMPORTANTE: UseDefaultCredentials DEBE ser false ANTES de asignar las Credentials
-                    UseDefaultCredentials = false,
-                    Credentials = new NetworkCredential(correoOrigen, passwordApp),
-                    EnableSsl = true,
-                    // CRÍTICO: 5 segundos de espera máxima para no colgar la pantalla de Angular
-                    Timeout = 25000
-                };
-
-                string listaRequisitosHtml = "";
                 if (!string.IsNullOrWhiteSpace(requisitos))
                 {
-                    var lineas = requisitos.Split(new[] { '\n', '\r' }, StringSplitOptions.RemoveEmptyEntries);
-                    foreach (var linea in lineas) { listaRequisitosHtml += $"<li style='margin-bottom: 8px;'>{linea.Trim('•', ' ', '-')}</li>"; }
+                    string[] lineas = requisitos.Split(
+                        new[] { '\n', '\r' },
+                        StringSplitOptions.RemoveEmptyEntries);
+
+                    listaRequisitosHtml = string.Join(
+                        Environment.NewLine,
+                        lineas.Select(linea =>
+                            $"<li style='margin-bottom: 8px;'>{WebUtility.HtmlEncode(linea.Trim('•', ' ', '-'))}</li>"));
                 }
 
-                string tituloPrincipal = esReagendada ? "Confirmación de Cita Reagendada" : "Confirmación de Cita Registrada";
-                string textoSecundario = esReagendada ? "Su cita ha sido reagendada exitosamente para una nueva fecha." : "Su cita ha sido generada exitosamente.";
+                string tituloPrincipal = esReagendada
+                    ? "Confirmación de Cita Reagendada"
+                    : "Confirmación de Cita Registrada";
 
-                // ZONAS HORARIAS: Asegurar UTC-6 (San Luis Potosí) si Railway la detecta como UTC
-                DateTime horaCitaMexico = fechaHora.Kind == DateTimeKind.Utc ? fechaHora.AddHours(-6) : fechaHora;
+                string textoSecundario = esReagendada
+                    ? "Su cita ha sido reagendada exitosamente para una nueva fecha."
+                    : "Su cita ha sido generada exitosamente.";
 
-                var mensajeHtml = $@"
-                <div style='font-family: Arial, sans-serif; color: #333; max-width: 600px; margin: 0 auto; border: 1px solid #ddd; border-radius: 8px; overflow: hidden; box-shadow: 0 4px 8px rgba(0,0,0,0.1);'>
+                // Convierte las fechas UTC a la hora de México (UTC-6).
+                DateTime horaCitaMexico = fechaHora.Kind == DateTimeKind.Utc
+                    ? fechaHora.AddHours(-6)
+                    : fechaHora;
+
+                string identificadorHtml = WebUtility.HtmlEncode(identificador);
+                string folioHtml = WebUtility.HtmlEncode(folio);
+                string tramiteHtml = WebUtility.HtmlEncode(tramite);
+                string sedeHtml = WebUtility.HtmlEncode(sede);
+                string costoTexto = costo.ToString(
+                    "0.00",
+                    CultureInfo.InvariantCulture);
+
+                string mensajeHtml = $@"
+                <div style='font-family: Arial, sans-serif; color: #333; max-width: 600px; margin: 0 auto; border: 1px solid #ddd; border-radius: 8px; overflow: hidden;'>
                     <div style='text-align: center; background-color: #ffffff; padding: 0;'>
                         <img src='http://201.144.103.221/citas/images/Sin_titulo.png' alt='Gobierno del Estado SLP' style='width: 100%; height: auto;' />
                     </div>
                     <div style='padding: 30px 20px;'>
                         <h2 style='color: #055A1C; text-align: center; margin-top: 0;'>{tituloPrincipal}</h2>
-                        <p style='font-size: 15px; margin-top: 20px;'>Estimado/a <b>{identificador}</b>,</p>
+                        <p style='font-size: 15px; margin-top: 20px;'>Estimado/a <b>{identificadorHtml}</b>,</p>
                         <p style='font-size: 15px;'>{textoSecundario} A continuación, le presentamos los detalles:</p>
-                        
+
                         <div style='background-color: #f9f9f9; padding: 20px; border-radius: 6px; border-left: 5px solid #055A1C; margin: 25px 0;'>
-                            <p style='margin: 0 0 10px 0; font-size: 15px;'><b>Trámite:</b> {tramite}</p>
-                            <p style='margin: 0 0 10px 0; font-size: 15px;'><b>Costo del Servicio:</b> <span style='color: #055A1C; font-weight: bold;'>${costo.ToString("0.00")}</span></p>
+                            <p style='margin: 0 0 10px 0; font-size: 15px;'><b>Trámite:</b> {tramiteHtml}</p>
+                            <p style='margin: 0 0 10px 0; font-size: 15px;'><b>Costo del Servicio:</b> <span style='color: #055A1C; font-weight: bold;'>${costoTexto}</span></p>
                             <p style='margin: 0 0 10px 0; font-size: 15px;'><b>Nueva Fecha y Hora:</b> <span style='color: #E60064; font-weight: bold;'>{horaCitaMexico.ToString("dd/MM/yyyy HH:mm")} hrs</span></p>
-                            <p style='margin: 0 0 15px 0; font-size: 15px;'><b>Sede:</b> {sede}</p>
-                            <h3 style='margin: 0; color: #055A1C; font-size: 20px;'>FOLIO: {folio}</h3>
+                            <p style='margin: 0 0 15px 0; font-size: 15px;'><b>Sede:</b> {sedeHtml}</p>
+                            <h3 style='margin: 0; color: #055A1C; font-size: 20px;'>FOLIO: {folioHtml}</h3>
                         </div>
 
                         <h4 style='color: #055A1C; margin-top: 30px; margin-bottom: 10px; font-size: 16px;'>📋 REQUISITOS OBLIGATORIOS</h4>
@@ -90,22 +152,72 @@ namespace RegistroCivilAPI.Services
                     </div>
                 </div>";
 
-                var mailMessage = new MailMessage
-                {
-                    From = new MailAddress(correoOrigen, "Registro Civil Citas"),
-                    Subject = $"{tituloPrincipal} - Folio: {folio}",
-                    Body = mensajeHtml,
-                    IsBodyHtml = true,
-                };
-                mailMessage.To.Add(correoDestino);
+                using var request = new HttpRequestMessage(
+                    HttpMethod.Post,
+                    "https://api.brevo.com/v3/smtp/email");
 
-                // SOLUCIÓN AL CONGELAMIENTO: Ejecutar Send (síncrono) dentro de Task.Run. 
-                // Esto garantiza que si el correo no sale en 5 segundos, se aborta y la cita se agenda rápido.
-                await Task.Run(() => smtpClient.Send(mailMessage));
+                request.Headers.TryAddWithoutValidation("api-key", apiKey);
+
+                request.Content = JsonContent.Create(new
+                {
+                    sender = new
+                    {
+                        name = "Registro Civil Citas",
+                        email = correoOrigen
+                    },
+                    to = new[]
+                    {
+                        new { email = correoDestino }
+                    },
+                    subject = $"{tituloPrincipal} - Folio: {folio}",
+                    htmlContent = mensajeHtml
+                });
+
+                using var httpClient = _httpClientFactory.CreateClient();
+                using var timeoutCts =
+                    new CancellationTokenSource(TimeSpan.FromSeconds(20));
+
+                using HttpResponseMessage response = await httpClient.SendAsync(
+                    request,
+                    timeoutCts.Token);
+
+                if (!response.IsSuccessStatusCode)
+                {
+                    string responseBody =
+                        await response.Content.ReadAsStringAsync(timeoutCts.Token);
+
+                    _logger.LogError(
+                        "Brevo rechazó el envío. Estado HTTP: {StatusCode}. Respuesta: {ResponseBody}",
+                        (int)response.StatusCode,
+                        responseBody);
+
+                    return;
+                }
+
+                _logger.LogInformation(
+                    "Brevo aceptó el correo para el folio {Folio}.",
+                    folio);
+            }
+            catch (OperationCanceledException ex)
+            {
+                _logger.LogError(
+                    ex,
+                    "Se agotó el tiempo de espera al enviar el correo del folio {Folio}.",
+                    folio);
+            }
+            catch (HttpRequestException ex)
+            {
+                _logger.LogError(
+                    ex,
+                    "Falló la conexión HTTPS con Brevo para el folio {Folio}.",
+                    folio);
             }
             catch (Exception ex)
             {
-                Console.WriteLine("ERROR AL ENVIAR CORREO SMTP: " + ex.Message);
+                _logger.LogError(
+                    ex,
+                    "Error inesperado al enviar el correo del folio {Folio}.",
+                    folio);
             }
         }
     }
