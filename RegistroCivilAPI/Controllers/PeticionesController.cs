@@ -137,10 +137,38 @@ namespace RegistroCivilAPI.Controllers
         [Authorize(Roles = "Super Administrador")]
         public async Task<ActionResult> ResolverPeticion(int id, [FromBody] RespuestaDTO dto)
         {
+            // Si viene NuevaPassword, aplicamos el reseteo al usuario solicitante
+            // en el mismo paso, para no depender de que el admin lo haga
+            // manualmente después en otra pantalla.
+            if (!string.IsNullOrWhiteSpace(dto.NuevaPassword))
+            {
+                string username = null;
+                using (var cmd = _context.Database.GetDbConnection().CreateCommand())
+                {
+                    cmd.CommandText = "SELECT username_solicitante FROM Peticiones_Soporte WHERE id_peticion = @id";
+                    var p = cmd.CreateParameter(); p.ParameterName = "@id"; p.Value = id; cmd.Parameters.Add(p);
+                    await _context.Database.OpenConnectionAsync();
+                    var result = await cmd.ExecuteScalarAsync();
+                    username = result?.ToString();
+                }
+
+                if (string.IsNullOrEmpty(username))
+                    return NotFound(new { mensaje = "Petición no encontrada." });
+
+                var usuario = await _context.UsuariosInternos.FirstOrDefaultAsync(u => u.Username == username);
+                if (usuario == null)
+                    return NotFound(new { mensaje = "El usuario solicitante ya no existe en el sistema." });
+
+                usuario.PasswordHash = BCrypt.Net.BCrypt.HashPassword(dto.NuevaPassword);
+                usuario.RequiereCambioPassword = true;
+                await _context.SaveChangesAsync();
+            }
+
             await _context.Database.ExecuteSqlRawAsync(
                 "UPDATE Peticiones_Soporte SET estatus = 'RESUELTA', respuesta = {0}, leido = 0 WHERE id_peticion = {1}",
                 dto.Respuesta, id);
-            return Ok(new { mensaje = "Petición marcada como resuelta y mensaje enviado al usuario." });
+
+            return Ok(new { mensaje = dto.NuevaPassword != null ? "Contraseña restablecida y petición resuelta." : "Petición marcada como resuelta y mensaje enviado al usuario." });
         }
 
         [HttpPut("MarcarLeidasAdmin")]
@@ -170,5 +198,5 @@ namespace RegistroCivilAPI.Controllers
     }
 
     public class NuevaPeticionDTO { public string Username { get; set; } public string Tipo { get; set; } public string Descripcion { get; set; } }
-    public class RespuestaDTO { public string Respuesta { get; set; } }
+    public class RespuestaDTO { public string Respuesta { get; set; } public string NuevaPassword { get; set; } }
 }
