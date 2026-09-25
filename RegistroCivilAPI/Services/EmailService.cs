@@ -29,11 +29,16 @@ namespace RegistroCivilAPI.Services
 
                 if (string.IsNullOrEmpty(correoOrigen) || string.IsNullOrEmpty(passwordApp)) return;
 
-                var smtpClient = new SmtpClient("smtp.gmail.com")
+                using var smtpClient = new SmtpClient("smtp.gmail.com")
                 {
                     Port = 587,
+                    DeliveryMethod = SmtpDeliveryMethod.Network,
+                    // IMPORTANTE: UseDefaultCredentials DEBE ser false ANTES de asignar las Credentials
+                    UseDefaultCredentials = false,
                     Credentials = new NetworkCredential(correoOrigen, passwordApp),
                     EnableSsl = true,
+                    // CRÍTICO: 5 segundos de espera máxima para no colgar la pantalla de Angular
+                    Timeout = 5000
                 };
 
                 string listaRequisitosHtml = "";
@@ -45,6 +50,9 @@ namespace RegistroCivilAPI.Services
 
                 string tituloPrincipal = esReagendada ? "Confirmación de Cita Reagendada" : "Confirmación de Cita Registrada";
                 string textoSecundario = esReagendada ? "Su cita ha sido reagendada exitosamente para una nueva fecha." : "Su cita ha sido generada exitosamente.";
+
+                // ZONAS HORARIAS: Asegurar UTC-6 (San Luis Potosí) si Railway la detecta como UTC
+                DateTime horaCitaMexico = fechaHora.Kind == DateTimeKind.Utc ? fechaHora.AddHours(-6) : fechaHora;
 
                 var mensajeHtml = $@"
                 <div style='font-family: Arial, sans-serif; color: #333; max-width: 600px; margin: 0 auto; border: 1px solid #ddd; border-radius: 8px; overflow: hidden; box-shadow: 0 4px 8px rgba(0,0,0,0.1);'>
@@ -59,7 +67,7 @@ namespace RegistroCivilAPI.Services
                         <div style='background-color: #f9f9f9; padding: 20px; border-radius: 6px; border-left: 5px solid #055A1C; margin: 25px 0;'>
                             <p style='margin: 0 0 10px 0; font-size: 15px;'><b>Trámite:</b> {tramite}</p>
                             <p style='margin: 0 0 10px 0; font-size: 15px;'><b>Costo del Servicio:</b> <span style='color: #055A1C; font-weight: bold;'>${costo.ToString("0.00")}</span></p>
-                            <p style='margin: 0 0 10px 0; font-size: 15px;'><b>Nueva Fecha y Hora:</b> <span style='color: #E60064; font-weight: bold;'>{fechaHora.ToString("dd/MM/yyyy HH:mm")} hrs</span></p>
+                            <p style='margin: 0 0 10px 0; font-size: 15px;'><b>Nueva Fecha y Hora:</b> <span style='color: #E60064; font-weight: bold;'>{horaCitaMexico.ToString("dd/MM/yyyy HH:mm")} hrs</span></p>
                             <p style='margin: 0 0 15px 0; font-size: 15px;'><b>Sede:</b> {sede}</p>
                             <h3 style='margin: 0; color: #055A1C; font-size: 20px;'>FOLIO: {folio}</h3>
                         </div>
@@ -90,9 +98,15 @@ namespace RegistroCivilAPI.Services
                     IsBodyHtml = true,
                 };
                 mailMessage.To.Add(correoDestino);
-                await smtpClient.SendMailAsync(mailMessage);
+
+                // SOLUCIÓN AL CONGELAMIENTO: Ejecutar Send (síncrono) dentro de Task.Run. 
+                // Esto garantiza que si el correo no sale en 5 segundos, se aborta y la cita se agenda rápido.
+                await Task.Run(() => smtpClient.Send(mailMessage));
             }
-            catch (System.Exception ex) { System.Console.WriteLine("ERROR AL ENVIAR CORREO: " + ex.Message); }
+            catch (Exception ex)
+            {
+                Console.WriteLine("ERROR AL ENVIAR CORREO SMTP: " + ex.Message);
+            }
         }
     }
 }
