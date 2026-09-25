@@ -38,7 +38,7 @@ namespace RegistroCivilAPI.Services
                     Credentials = new NetworkCredential(correoOrigen, passwordApp),
                     EnableSsl = true,
                     // CRÍTICO: 5 segundos de espera máxima para no colgar la pantalla de Angular
-                    Timeout = 5000
+                    Timeout = 25000
                 };
 
                 string listaRequisitosHtml = "";
