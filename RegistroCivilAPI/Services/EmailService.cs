@@ -1,10 +1,9 @@
 ﻿using System;
 using System.Globalization;
-using System.Linq;
 using System.Net;
 using System.Net.Http;
-using System.Net.Http.Headers;
-using System.Net.Http.Json;
+using System.Text;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Configuration;
@@ -15,14 +14,14 @@ namespace RegistroCivilAPI.Services
     public interface IEmailService
     {
         Task EnviarCorreoConfirmacionAsync(
-            string correoDestino,
+            string? correoDestino,
             string identificador,
             string folio,
             DateTime fechaHora,
             string tramite,
             decimal costo,
             string sede,
-            string requisitos,
+            string? requisitos,
             bool esReagendada = false);
     }
 
@@ -34,8 +33,8 @@ namespace RegistroCivilAPI.Services
 
         public EmailService(
             IConfiguration config,
-            IHttpClientFactory httpClientFactory,
-            ILogger<EmailService> logger)
+            IHttpClientFactory httpClientFactory = null,
+            ILogger<EmailService> logger = null)
         {
             _config = config;
             _httpClientFactory = httpClientFactory;
@@ -43,56 +42,47 @@ namespace RegistroCivilAPI.Services
         }
 
         public async Task EnviarCorreoConfirmacionAsync(
-            string correoDestino,
+            string? correoDestino,
             string identificador,
             string folio,
             DateTime fechaHora,
             string tramite,
             decimal costo,
             string sede,
-            string requisitos,
+            string? requisitos,
             bool esReagendada = false)
         {
-            // Se conserva el nombre PasswordApp para no cambiar tus variables existentes.
-            // El valor debe ser una API key de Brevo, no la contraseña de Gmail.
-            string apiKey = _config["EmailSettings:PasswordApp"] ?? string.Empty;
+            if (string.IsNullOrWhiteSpace(correoDestino))
+            {
+                _logger?.LogWarning("No se envió el correo: el correo destinatario está vacío.");
+                return;
+            }
+
+            string apiKey = _config["EmailSettings:ApiKey"] ?? _config["EmailSettings:PasswordApp"] ?? string.Empty;
             string correoOrigen = _config["EmailSettings:Correo"] ?? string.Empty;
 
             if (string.IsNullOrWhiteSpace(apiKey))
             {
-                _logger.LogError(
-                    "No se envió el correo: falta configurar EmailSettings:PasswordApp.");
+                _logger?.LogError("No se envió el correo: falta configurar EmailSettings:ApiKey en Railway.");
                 return;
             }
 
             if (string.IsNullOrWhiteSpace(correoOrigen))
             {
-                _logger.LogError(
-                    "No se envió el correo: falta configurar EmailSettings:Correo.");
-                return;
-            }
-
-            if (string.IsNullOrWhiteSpace(correoDestino))
-            {
-                _logger.LogError(
-                    "No se envió el correo: el correo destinatario está vacío.");
+                _logger?.LogError("No se envió el correo: falta configurar EmailSettings:Correo.");
                 return;
             }
 
             try
             {
                 string listaRequisitosHtml = string.Empty;
-
                 if (!string.IsNullOrWhiteSpace(requisitos))
                 {
-                    string[] lineas = requisitos.Split(
-                        new[] { '\n', '\r' },
-                        StringSplitOptions.RemoveEmptyEntries);
-
-                    listaRequisitosHtml = string.Join(
-                        Environment.NewLine,
-                        lineas.Select(linea =>
-                            $"<li style='margin-bottom: 8px;'>{WebUtility.HtmlEncode(linea.Trim('•', ' ', '-'))}</li>"));
+                    string[] lineas = requisitos.Split(new[] { '\n', '\r' }, StringSplitOptions.RemoveEmptyEntries);
+                    foreach (var linea in lineas)
+                    {
+                        listaRequisitosHtml += $"<li style='margin-bottom: 8px;'>{WebUtility.HtmlEncode(linea.Trim('•', ' ', '-'))}</li>";
+                    }
                 }
 
                 string tituloPrincipal = esReagendada
@@ -103,7 +93,7 @@ namespace RegistroCivilAPI.Services
                     ? "Su cita ha sido reagendada exitosamente para una nueva fecha."
                     : "Su cita ha sido generada exitosamente.";
 
-                // Convierte las fechas UTC a la hora de México (UTC-6).
+                // ZONA HORARIA UTC-6: Asegura que la fecha y hora mostrada corresponda a San Luis Potosí
                 DateTime horaCitaMexico = fechaHora.Kind == DateTimeKind.Utc
                     ? fechaHora.AddHours(-6)
                     : fechaHora;
@@ -112,9 +102,7 @@ namespace RegistroCivilAPI.Services
                 string folioHtml = WebUtility.HtmlEncode(folio);
                 string tramiteHtml = WebUtility.HtmlEncode(tramite);
                 string sedeHtml = WebUtility.HtmlEncode(sede);
-                string costoTexto = costo.ToString(
-                    "0.00",
-                    CultureInfo.InvariantCulture);
+                string costoTexto = costo.ToString("0.00", CultureInfo.InvariantCulture);
 
                 string mensajeHtml = $@"
                 <div style='font-family: Arial, sans-serif; color: #333; max-width: 600px; margin: 0 auto; border: 1px solid #ddd; border-radius: 8px; overflow: hidden;'>
@@ -152,72 +140,37 @@ namespace RegistroCivilAPI.Services
                     </div>
                 </div>";
 
-                using var request = new HttpRequestMessage(
-                    HttpMethod.Post,
-                    "https://api.brevo.com/v3/smtp/email");
+                using var request = new HttpRequestMessage(HttpMethod.Post, "https://api.brevo.com/v3/smtp/email");
+                request.Headers.Add("api-key", apiKey);
 
-                request.Headers.TryAddWithoutValidation("api-key", apiKey);
-
-                request.Content = JsonContent.Create(new
+                var payload = new
                 {
-                    sender = new
-                    {
-                        name = "Registro Civil Citas",
-                        email = correoOrigen
-                    },
-                    to = new[]
-                    {
-                        new { email = correoDestino }
-                    },
+                    sender = new { name = "Registro Civil Citas SLP", email = correoOrigen },
+                    to = new[] { new { email = correoDestino.Trim(), name = identificador } },
                     subject = $"{tituloPrincipal} - Folio: {folio}",
                     htmlContent = mensajeHtml
-                });
+                };
 
-                using var httpClient = _httpClientFactory.CreateClient();
-                using var timeoutCts =
-                    new CancellationTokenSource(TimeSpan.FromSeconds(20));
+                string jsonContent = JsonSerializer.Serialize(payload);
+                request.Content = new StringContent(jsonContent, Encoding.UTF8, "application/json");
 
-                using HttpResponseMessage response = await httpClient.SendAsync(
-                    request,
-                    timeoutCts.Token);
+                using var httpClient = _httpClientFactory != null ? _httpClientFactory.CreateClient() : new HttpClient();
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+
+                HttpResponseMessage response = await httpClient.SendAsync(request, cts.Token);
 
                 if (!response.IsSuccessStatusCode)
                 {
-                    string responseBody =
-                        await response.Content.ReadAsStringAsync(timeoutCts.Token);
-
-                    _logger.LogError(
-                        "Brevo rechazó el envío. Estado HTTP: {StatusCode}. Respuesta: {ResponseBody}",
-                        (int)response.StatusCode,
-                        responseBody);
-
+                    string errorResponse = await response.Content.ReadAsStringAsync();
+                    _logger?.LogError("Brevo rechazó el envío. Código: {Status}. Detalle: {Detalle}", (int)response.StatusCode, errorResponse);
                     return;
                 }
 
-                _logger.LogInformation(
-                    "Brevo aceptó el correo para el folio {Folio}.",
-                    folio);
-            }
-            catch (OperationCanceledException ex)
-            {
-                _logger.LogError(
-                    ex,
-                    "Se agotó el tiempo de espera al enviar el correo del folio {Folio}.",
-                    folio);
-            }
-            catch (HttpRequestException ex)
-            {
-                _logger.LogError(
-                    ex,
-                    "Falló la conexión HTTPS con Brevo para el folio {Folio}.",
-                    folio);
+                _logger?.LogInformation("Correo enviado exitosamente a {Destino} mediante API de Brevo.", correoDestino);
             }
             catch (Exception ex)
             {
-                _logger.LogError(
-                    ex,
-                    "Error inesperado al enviar el correo del folio {Folio}.",
-                    folio);
+                _logger?.LogError(ex, "Error inesperado al enviar el correo por API de Brevo.");
             }
         }
     }

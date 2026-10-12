@@ -1,0 +1,4320 @@
+This file is a merged representation of the entire codebase, combined into a single document by Repomix.
+
+<file_summary>
+This section contains a summary of this file.
+
+<purpose>
+This file contains a packed representation of the entire repository's contents.
+It is designed to be easily consumable by AI systems for analysis, code review,
+or other automated processes.
+</purpose>
+
+<file_format>
+The content is organized as follows:
+1. This summary section
+2. Repository information
+3. Directory structure
+4. Repository files (if enabled)
+5. Multiple file entries, each consisting of:
+  - File path as an attribute
+  - Full contents of the file
+</file_format>
+
+<usage_guidelines>
+- This file should be treated as read-only. Any changes should be made to the
+  original repository files, not this packed version.
+- When processing this file, use the file path to distinguish
+  between different files in the repository.
+- Be aware that this file may contain sensitive information. Handle it with
+  the same level of security as you would the original repository.
+</usage_guidelines>
+
+<notes>
+- Some files may have been excluded based on .gitignore rules and Repomix's configuration
+- Binary files are not included in this packed representation. Please refer to the Repository Structure section for a complete list of file paths, including binary files
+- Files matching patterns in .gitignore are excluded
+- Files matching default ignore patterns are excluded
+- Files are sorted by Git change count (files with more changes are at the bottom)
+</notes>
+
+</file_summary>
+
+<directory_structure>
+Controllers/
+  AuthController.cs
+  AvisosController.cs
+  BitacoraController.cs
+  CitasController.cs
+  ConfiguracionController.cs
+  PeticionesController.cs
+  SedesController.cs
+  TramitesController.cs
+  UsuariosController.cs
+DTOs/
+  CitaResponseDTO.cs
+Migrations/
+  20260923164315_InicialCloud.cs
+  20260923164315_InicialCloud.Designer.cs
+  RegistroCivilCitasContextModelSnapshot.cs
+Models/
+  AvisoGlobal.cs
+  BitacoraAuditorium.cs
+  CategoriasTramite.cs
+  Cita.cs
+  Ciudadano.cs
+  ConfiguracionAgenda.cs
+  DiasInhabile.cs
+  HorariosSede.cs
+  RegistroAcceso.cs
+  RegistroCivilCitasContext.cs
+  Role.cs
+  Sede.cs
+  Tramite.cs
+  UsuariosInterno.cs
+Properties/
+  launchSettings.json
+Services/
+  EmailService.cs
+appsettings.Development.json
+appsettings.json
+Program.cs
+RegistroCivilAPI.csproj
+RegistroCivilAPI.http
+</directory_structure>
+
+<files>
+This section contains the contents of the repository's files.
+
+<file path="Controllers/AuthController.cs">
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
+using Microsoft.IdentityModel.Tokens;
+using RegistroCivilAPI.Models;
+using System;
+using System.IdentityModel.Tokens.Jwt;
+using System.Security.Claims;
+using System.Text;
+using System.Threading.Tasks;
+
+namespace RegistroCivilAPI.Controllers
+{
+    [Route("api/[controller]")]
+    [ApiController]
+    public class AuthController : ControllerBase
+    {
+        private readonly RegistroCivilCitasContext _context;
+        private readonly IConfiguration _config;
+
+        public AuthController(RegistroCivilCitasContext context, IConfiguration config)
+        {
+            _context = context;
+            _config = config;
+        }
+
+        [HttpPost("login")]
+        public async Task<ActionResult> Login([FromBody] LoginDTO dto)
+        {
+            var user = await _context.UsuariosInternos.Include(u => u.IdRolNavigation).Include(u => u.IdSedeNavigation)
+                .FirstOrDefaultAsync(u => u.Username == dto.Username);
+
+            if (user == null) return Unauthorized(new { mensaje = "Usuario o contraseña incorrectos." });
+            if (user.Activo == false) return Unauthorized(new { mensaje = "Usuario bloqueado." });
+
+            // ====================================================================
+            // ESCUDO 1: VERIFICAR SI LA CUENTA ESTÁ BLOQUEADA ANTES DE REVISAR CONTRASEÑAS
+            // ====================================================================
+            if (user.BloqueadoHasta.HasValue && user.BloqueadoHasta.Value > DateTime.Now)
+            {
+                var tiempoRestante = (int)(user.BloqueadoHasta.Value - DateTime.Now).TotalMinutes;
+                return StatusCode(403, new { mensaje = $"Por seguridad, la cuenta está bloqueada. Intente de nuevo en {tiempoRestante + 1} minutos." });
+            }
+
+            bool isPasswordValid = false;
+            try
+            {
+                // Validación original con BCrypt conservada
+                isPasswordValid = BCrypt.Net.BCrypt.Verify(dto.Password, user.PasswordHash);
+            }
+            catch
+            {
+                isPasswordValid = false;
+            }
+
+            if (!isPasswordValid)
+            {
+                // ====================================================================
+                // ESCUDO 2: CONTABILIZAR EL ERROR Y BLOQUEAR SI LLEGA A 3
+                // ====================================================================
+                user.IntentosFallidos += 1;
+
+                if (user.IntentosFallidos >= 3)
+                {
+                    user.BloqueadoHasta = DateTime.Now.AddMinutes(15);
+                    await _context.SaveChangesAsync();
+                    return StatusCode(403, new { mensaje = "Cuenta bloqueada temporalmente por exceso de intentos fallidos (15 min)." });
+                }
+
+                await _context.SaveChangesAsync();
+                return Unauthorized(new { mensaje = $"Usuario o contraseña incorrectos. Te quedan {3 - user.IntentosFallidos} intento(s)." });
+            }
+
+            // ====================================================================
+            // ESCUDO 3: SI EL LOGIN ES EXITOSO, REINICIAMOS LOS CONTADORES A CERO
+            // ====================================================================
+            user.IntentosFallidos = 0;
+            user.BloqueadoHasta = null;
+            await _context.SaveChangesAsync();
+
+            // Consulta original conservada para registrar el acceso
+            int idAcceso = 0;
+            using (var cmd = _context.Database.GetDbConnection().CreateCommand())
+            {
+                cmd.CommandText = "INSERT INTO Registro_Accesos (username, fecha_login) OUTPUT INSERTED.id_acceso VALUES (@username, GETDATE())";
+
+                var paramUsername = cmd.CreateParameter();
+                paramUsername.ParameterName = "@username";
+                paramUsername.Value = user.Username;
+                cmd.Parameters.Add(paramUsername);
+
+                await _context.Database.OpenConnectionAsync();
+                idAcceso = (int)await cmd.ExecuteScalarAsync();
+            }
+
+            var tokenString = GenerarTokenJWT(user);
+
+            // Payload original conservado
+            return Ok(new
+            {
+                idUsuario = user.IdUsuario,
+                username = user.Username,
+                nombreCompleto = user.NombreCompleto,
+                rol = user.IdRolNavigation.NombreRol,
+                idSede = user.IdSede,
+                sede = user.IdSedeNavigation.Nombre,
+                requiereCambioPassword = user.RequiereCambioPassword ?? true,
+                idAcceso = idAcceso,
+                token = tokenString
+            });
+        }
+
+
+        [HttpPost("logout/{idAcceso}")]
+        [Authorize]
+        public async Task<ActionResult> Logout(int idAcceso)
+        {
+
+            var usernameClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+
+            if (string.IsNullOrEmpty(usernameClaim))
+                return Unauthorized();
+
+            await _context.Database.ExecuteSqlRawAsync(
+                "UPDATE Registro_Accesos SET fecha_logout = GETDATE() WHERE id_acceso = {0} AND username = {1}",
+                idAcceso, usernameClaim);
+
+            return Ok();
+        }
+
+        private string GenerarTokenJWT(UsuariosInterno user)
+        {
+            var jwtSettings = _config.GetSection("JwtSettings");
+            var keyBytes = Encoding.UTF8.GetBytes(jwtSettings["SecretKey"]);
+
+            var claims = new[]
+            {
+                new Claim(JwtRegisteredClaimNames.Sub, user.Username),
+                new Claim(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString()),
+                new Claim(ClaimTypes.NameIdentifier, user.IdUsuario.ToString()),
+                new Claim(ClaimTypes.Role, user.IdRolNavigation.NombreRol),
+                new Claim("SedeId", user.IdSede.ToString())
+            };
+
+            var key = new SymmetricSecurityKey(keyBytes);
+            var creds = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);
+
+            var tokenDescriptor = new SecurityTokenDescriptor
+            {
+                Subject = new ClaimsIdentity(claims),
+                Expires = DateTime.UtcNow.AddHours(8),
+                Issuer = jwtSettings["Issuer"],
+                Audience = jwtSettings["Audience"],
+                SigningCredentials = creds
+            };
+
+            var tokenHandler = new JwtSecurityTokenHandler();
+            var token = tokenHandler.CreateToken(tokenDescriptor);
+
+            return tokenHandler.WriteToken(token);
+        }
+    }
+
+    public class LoginDTO { public string Username { get; set; } public string Password { get; set; } }
+}
+</file>
+
+<file path="Controllers/AvisosController.cs">
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
+using RegistroCivilAPI.Models;
+
+namespace RegistroCivilAPI.Controllers
+{
+    [Route("api/[controller]")]
+    [ApiController]
+    public class AvisosController : ControllerBase
+    {
+        private readonly RegistroCivilCitasContext _context;
+
+        public AvisosController(RegistroCivilCitasContext context)
+        {
+            _context = context;
+        }
+
+        [HttpGet("Activo")]
+        public async Task<ActionResult> GetAvisoActivo()
+        {
+            var aviso = await _context.AvisosGlobales
+                .Where(a => a.Activo == true)
+                .FirstOrDefaultAsync();
+
+            if (aviso == null) return NoContent();
+
+            return Ok(aviso);
+        }
+    }
+}
+</file>
+
+<file path="Controllers/BitacoraController.cs">
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
+using RegistroCivilAPI.Models;
+using System;
+using System.Linq;
+using System.Threading.Tasks;
+using Microsoft.AspNetCore.Authorization;
+using System.Security.Claims; 
+
+namespace RegistroCivilAPI.Controllers
+{
+    [Authorize(Roles = "Administrador,Super Administrador")]
+    [Route("api/[controller]")]
+    [ApiController]
+    public class BitacoraController : ControllerBase
+    {
+        private readonly RegistroCivilCitasContext _context;
+
+        public BitacoraController(RegistroCivilCitasContext context)
+        {
+            _context = context;
+        }
+
+
+        [HttpGet]
+        public async Task<ActionResult> ObtenerBitacora([FromQuery] string? fecha = null, [FromQuery] string? busqueda = null, [FromQuery] int pagina = 1, [FromQuery] int registrosPorPagina = 50)
+        {
+            var query = _context.BitacoraAuditoria
+                .Include(b => b.IdUsuarioInternoNavigation)
+                .AsQueryable(); 
+
+            if (!string.IsNullOrWhiteSpace(busqueda))
+            {
+                busqueda = busqueda.ToLower(); 
+
+                query = query.Where(b => b.IdUsuarioInternoNavigation.NombreCompleto.ToLower().Contains(busqueda) ||
+                                         b.TablaAfectada.ToLower().Contains(busqueda) ||
+                                         b.AccionRealizada.ToLower().Contains(busqueda) ||
+                                         b.RegistroId.ToLower().Contains(busqueda) ||
+                                         (b.ValorAnterior != null && b.ValorAnterior.Contains(busqueda)) ||
+                                         (b.ValorNuevo != null && b.ValorNuevo.Contains(busqueda)));
+            }
+            else
+            {
+                if (!string.IsNullOrEmpty(fecha) && DateTime.TryParse(fecha, out DateTime parsedDate))
+                {
+                    var fechaFiltro = parsedDate.Date; 
+                    query = query.Where(b => b.FechaCambio.HasValue &&
+                                             b.FechaCambio.Value.Year == fechaFiltro.Year &&
+                                             b.FechaCambio.Value.Month == fechaFiltro.Month &&
+                                             b.FechaCambio.Value.Day == fechaFiltro.Day); 
+                }
+            }
+
+           
+            int totalRegistros = await query.CountAsync();
+
+            
+            int totalPaginas = (int)Math.Ceiling(totalRegistros / (double)registrosPorPagina);
+            int registrosASaltar = (pagina - 1) * registrosPorPagina;
+
+            var registros = await query
+                .OrderByDescending(b => b.FechaCambio) 
+                .Skip(registrosASaltar)
+                .Take(registrosPorPagina)
+                .Select(b => new {
+                    idBitacora = b.IdBitacora,
+                    empleado = b.IdUsuarioInternoNavigation.NombreCompleto,
+                    tabla = b.TablaAfectada,
+                    accion = b.AccionRealizada,
+                    registroId = b.RegistroId,
+                    valorAnterior = b.ValorAnterior,
+                    valorNuevo = b.ValorNuevo,
+                    fecha = b.FechaCambio
+                }) 
+                .ToListAsync(); 
+
+            
+            return Ok(new
+            {
+                totalRegistros = totalRegistros,
+                totalPaginas = totalPaginas,
+                paginaActual = pagina,
+                datos = registros
+            });
+        }
+
+        [HttpPost("Deshacer/{idBitacora}")]
+        [Authorize(Roles = "Administrador,Super Administrador")]
+        public async Task<ActionResult> DeshacerCambio(int idBitacora)
+        {
+          
+            var usernameClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+            if (string.IsNullOrEmpty(usernameClaim))
+                return Unauthorized(new { mensaje = "Token inválido." });
+
+           
+            var usuarioReal = await _context.UsuariosInternos.FirstOrDefaultAsync(u => u.Username == usernameClaim);
+            if (usuarioReal == null)
+                return Unauthorized(new { mensaje = "Usuario no encontrado en el sistema." });
+
+            int idAdmin = usuarioReal.IdUsuario;
+
+            var log = await _context.BitacoraAuditoria.FindAsync(idBitacora);
+            if (log == null) return NotFound(new { mensaje = "Registro no encontrado." });
+
+            if (log.TablaAfectada == "Citas" && log.AccionRealizada == "UPDATE")
+            {
+                var cita = await _context.Citas.FirstOrDefaultAsync(c => c.IdCita == log.RegistroId);
+                if (cita == null) return BadRequest(new { mensaje = "La cita original ya no existe." });
+
+                string estatusAnterior = log.ValorAnterior?.Replace("Estatus: ", "").Trim();
+                if (string.IsNullOrEmpty(estatusAnterior))
+                    return BadRequest(new { mensaje = "No se pudo leer el valor anterior para restaurarlo." });
+
+                
+                var estatusValidos = new[] { "PROGRAMADA", "CONFIRMADA", "REPROGRAMADA", "ATENDIDA", "NO_ASISTIO", "CANCELADA" };
+                if (Array.IndexOf(estatusValidos, estatusAnterior) < 0)
+                    return BadRequest(new { mensaje = $"El valor anterior registrado ('{estatusAnterior}') no es un estatus válido y no puede restaurarse automáticamente." });
+
+                string estatusActual = cita.Estatus;
+                cita.Estatus = estatusAnterior;
+
+                var nuevoLog = new BitacoraAuditorium
+                {
+                    IdUsuarioInterno = idAdmin, 
+                    TablaAfectada = "Citas",
+                    AccionRealizada = "UPDATE",
+                    RegistroId = cita.IdCita,
+                    ValorAnterior = $"Estatus: {estatusActual}",
+                    ValorNuevo = $"Estatus: {estatusAnterior} (RESTAURADO)",
+                    FechaCambio = DateTime.Now
+                };
+
+                _context.BitacoraAuditoria.Add(nuevoLog);
+                await _context.SaveChangesAsync();
+
+                return Ok(new { mensaje = "El cambio ha sido deshecho y la cita volvió a su estado anterior." });
+            }
+
+            return BadRequest(new { mensaje = "Esta acción específica no se puede deshacer de forma automática." });
+        }
+    }
+}
+</file>
+
+<file path="Controllers/CitasController.cs">
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Net.Http;
+using System.Threading.Tasks;
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
+using Microsoft.AspNetCore.Authorization;
+using System.Security.Claims;
+using RegistroCivilAPI.Models;
+using RegistroCivilAPI.Services;
+
+namespace RegistroCivilAPI.Controllers
+{
+    [Route("api/[controller]")]
+    [ApiController]
+    public class CitasController : ControllerBase
+    {
+        private readonly RegistroCivilCitasContext _context;
+        private readonly IConfiguration _config;
+        private readonly IEmailService _emailService;
+        private readonly IHttpClientFactory _httpClientFactory;
+        public CitasController(RegistroCivilCitasContext context, IConfiguration config, IEmailService emailService, IHttpClientFactory httpClientFactory)
+        {
+            _context = context;
+            _config = config;
+            _emailService = emailService;
+            _httpClientFactory = httpClientFactory;
+        }
+
+        private async Task AutoActualizarInasistenciasAsync()
+        {
+            await _context.Database.ExecuteSqlRawAsync(
+                "UPDATE Citas SET estatus = 'NO_ASISTIO' WHERE estatus IN ('PROGRAMADA', 'CONFIRMADA', 'REPROGRAMADA') AND fecha_hora_fin < GETDATE()"
+            );
+        }
+
+        [HttpGet("Horarios")]
+        public async Task<ActionResult<IEnumerable<string>>> ObtenerHorariosDisponibles(int idSede, int idTramite, [FromQuery] string fecha)
+        {
+            // 1. Forzamos el parseo seguro sin zona horaria
+            if (!DateTime.TryParse(fecha, out DateTime fechaCita))
+                return BadRequest("Formato de fecha inválido.");
+
+            if (fechaCita.Date < DateTime.Today) return Ok(new List<string>());
+
+            var config = await _context.ConfiguracionAgendas.FirstOrDefaultAsync(c => c.Id == 1);
+            if (config != null)
+            {
+                if (fechaCita.Date < config.FechaInicio.Date || fechaCita.Date > config.FechaFin.Date)
+                    return Ok(new List<string>());
+            }
+
+            var inhabil = await _context.DiasInhabiles.AnyAsync(d => d.FechaBloqueada == DateOnly.FromDateTime(fechaCita) && (d.IdSede == idSede || d.IdSede == null));
+            if (inhabil) return Ok(new List<string>());
+
+            byte diaSemana = (byte)(fechaCita.DayOfWeek == DayOfWeek.Sunday ? 7 : (int)fechaCita.DayOfWeek);
+            var horarioSede = await _context.HorariosSedes.FirstOrDefaultAsync(h => h.IdSede == idSede && h.DiaSemana == diaSemana);
+            if (horarioSede == null) return Ok(new List<string>());
+
+            var tramite = await _context.Tramites.FindAsync(idTramite);
+            if (tramite == null) return BadRequest("Trámite no encontrado");
+
+            if (tramite.FechaInicioPermitida.HasValue && fechaCita.Date < tramite.FechaInicioPermitida.Value.Date)
+                return Ok(new List<string>());
+
+            if (tramite.FechaFinPermitida.HasValue && fechaCita.Date > tramite.FechaFinPermitida.Value.Date)
+                return Ok(new List<string>());
+
+            int intervalo = tramite.DuracionMinutos > 0 ? tramite.DuracionMinutos : 30;
+            int limiteDiario = tramite.LimiteDiarioSede > 0 ? tramite.LimiteDiarioSede : 999;
+
+            var cantidadCitasDia = await _context.Citas
+                .CountAsync(c => c.IdSede == idSede && c.IdTramite == idTramite && c.FechaHoraInicio.Date == fechaCita.Date && (c.Estatus == "PROGRAMADA" || c.Estatus == "REPROGRAMADA"));
+
+            if (cantidadCitasDia >= limiteDiario) return Ok(new List<string>());
+
+            var horasOcupadas = await _context.Citas
+                .Where(c => c.IdSede == idSede && c.FechaHoraInicio.Date == fechaCita.Date && (c.Estatus == "PROGRAMADA" || c.Estatus == "REPROGRAMADA"))
+                .Select(c => TimeOnly.FromDateTime(c.FechaHoraInicio)).ToListAsync();
+
+            var horasDisponibles = new List<string>();
+            TimeOnly horaActual = horarioSede.HoraApertura;
+
+            // Corrección UTC-6 para la nube de Railway
+            DateTime horaMexico = DateTime.UtcNow.AddHours(-6);
+            TimeOnly now = TimeOnly.FromDateTime(horaMexico);
+            DateTime hoyMexico = horaMexico.Date;
+
+            while (horaActual < horarioSede.HoraCierre)
+            {
+                if (fechaCita.Date == hoyMexico && horaActual <= now)
+                {
+                    horaActual = horaActual.AddMinutes(intervalo);
+                    continue;
+                }
+                if (!horasOcupadas.Contains(horaActual))
+                {
+                    horasDisponibles.Add(horaActual.ToString("HH:mm"));
+                }
+                horaActual = horaActual.AddMinutes(intervalo);
+            }
+            return Ok(horasDisponibles);
+        }
+
+        [HttpPost]
+        public async Task<ActionResult> AgendarCita([FromBody] CitaDTO solicitud)
+        {
+            if (!await ValidarReCaptcha(solicitud.CaptchaToken))
+                return BadRequest(new { mensaje = "Verificación de seguridad fallida. Por favor, complete el Captcha." });
+            try
+            {
+                Ciudadano ciudadano = null;
+                string curpBuscado = string.IsNullOrWhiteSpace(solicitud.Curp) ? null : solicitud.Curp.Trim().ToUpper();
+                string nombreBuscado = string.IsNullOrWhiteSpace(solicitud.Nombre) ? null : solicitud.Nombre.Trim().ToUpper();
+                string telLimpio = solicitud.Telefono?.Trim();
+
+                if (!string.IsNullOrWhiteSpace(nombreBuscado))
+                {
+                    var usuarioConMismoTel = await _context.Ciudadanos.FirstOrDefaultAsync(c => c.Telefono == telLimpio);
+                    if (usuarioConMismoTel != null && usuarioConMismoTel.Nombre.ToUpper() != nombreBuscado)
+                    {
+                        return BadRequest(new { mensaje = "Alerta de Seguridad: Este número de teléfono ya está registrado a nombre de otra persona. No se permiten gestores." });
+                    }
+                }
+
+                if (!string.IsNullOrWhiteSpace(curpBuscado))
+                {
+                    ciudadano = await _context.Ciudadanos.FirstOrDefaultAsync(c => c.Curp == curpBuscado);
+                }
+
+                if (ciudadano == null && !string.IsNullOrWhiteSpace(nombreBuscado))
+                {
+                    ciudadano = await _context.Ciudadanos.FirstOrDefaultAsync(c => c.Nombre.ToUpper() == nombreBuscado && c.Telefono == telLimpio);
+                }
+
+                if (ciudadano == null)
+                {
+                    string curpFinal = curpBuscado ?? "ENM" + Guid.NewGuid().ToString("N").Substring(0, 15).ToUpper();
+                    string nombreSeguro = string.IsNullOrWhiteSpace(solicitud.Nombre) ? "" : solicitud.Nombre.Trim();
+                    var partesNombre = nombreSeguro.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+
+                    string origenRegistro = string.IsNullOrWhiteSpace(solicitud.EstadoRegistro) ? solicitud.MunicipioRegistro : $"{solicitud.EstadoRegistro} - {solicitud.MunicipioRegistro}";
+                    if (string.IsNullOrWhiteSpace(origenRegistro)) origenRegistro = "MANUAL";
+                    if (origenRegistro.Length > 145) origenRegistro = origenRegistro.Substring(0, 145);
+
+                    ciudadano = new Ciudadano
+                    {
+                        Curp = curpFinal,
+                        Nombre = partesNombre.Length > 0 ? partesNombre[0].Substring(0, Math.Min(partesNombre[0].Length, 50)) : "",
+                        PrimerApellido = partesNombre.Length > 1 ? partesNombre[1].Substring(0, Math.Min(partesNombre[1].Length, 50)) : "",
+                        SegundoApellido = partesNombre.Length > 2 ? string.Join(" ", partesNombre.Skip(2)).Substring(0, Math.Min(string.Join(" ", partesNombre.Skip(2)).Length, 50)) : "",
+                        Correo = solicitud.Correo?.Trim().Substring(0, Math.Min(solicitud.Correo.Trim().Length, 100)),
+                        Telefono = telLimpio.Substring(0, Math.Min(telLimpio.Length, 15)),
+                        OrigenRegistro = origenRegistro
+                    };
+                    _context.Ciudadanos.Add(ciudadano);
+                    await _context.SaveChangesAsync();
+                }
+
+                var penalizado = await _context.Citas.AnyAsync(c => c.IdCiudadano == ciudadano.IdCiudadano && c.Estatus == "NO_ASISTIO" && c.FechaHoraInicio >= DateTime.Now.AddDays(-7));
+                if (penalizado)
+                {
+                    return BadRequest(new { mensaje = "Sistema de Penalización: Usted cuenta con una inasistencia reciente. Por reglamento, podrá agendar nuevas citas al transcurrir 1 semana desde la falta." });
+                }
+
+                var citaMismoTramite = await _context.Citas.AnyAsync(c =>
+                    c.IdCiudadano == ciudadano.IdCiudadano &&
+                    c.IdTramite == solicitud.IdTramite &&
+                    c.FechaHoraInicio.Date == solicitud.FechaHora.Date &&
+                    (c.Estatus == "PROGRAMADA" || c.Estatus == "REPROGRAMADA"));
+
+                if (citaMismoTramite) return BadRequest(new { mensaje = "Alerta: Usted ya tiene una cita programada para este trámite exacto en este día." });
+
+                var tramiteEntity = await _context.Tramites.FindAsync(solicitud.IdTramite);
+                if (tramiteEntity == null) return BadRequest(new { mensaje = "Trámite no encontrado." });
+
+                int duracion = tramiteEntity.DuracionMinutos > 0 ? tramiteEntity.DuracionMinutos : 30;
+                DateTime fechaFin = solicitud.FechaHora.AddMinutes(duracion);
+
+                string folio;
+
+                await using var transaction = await _context.Database.BeginTransactionAsync(System.Data.IsolationLevel.Serializable);
+                try
+                {
+                    bool solapada = await _context.Citas.AnyAsync(c =>
+                        c.IdSede == solicitud.IdSede &&
+                        (c.Estatus == "PROGRAMADA" || c.Estatus == "REPROGRAMADA") &&
+                        c.FechaHoraInicio < fechaFin &&
+                        c.FechaHoraFin > solicitud.FechaHora);
+
+                    if (solapada)
+                    {
+                        await transaction.RollbackAsync();
+                        return BadRequest(new { mensaje = "Ese horario acaba de ser tomado por otro ciudadano. Por favor seleccione otro horario disponible." });
+                    }
+
+                    folio = Guid.NewGuid().ToString().Substring(0, 8);
+                    string ip = HttpContext.Connection.RemoteIpAddress?.ToString() ?? "Desconocida";
+
+                    await _context.Database.ExecuteSqlRawAsync(
+                        "INSERT INTO Citas (id_cita, id_ciudadano, id_tramite, id_sede, fecha_hora_inicio, fecha_hora_fin, estatus, ip_origen, navegador, sistema_operativo) VALUES ({0}, {1}, {2}, {3}, {4}, {5}, 'PROGRAMADA', {6}, {7}, {8})",
+                        folio, ciudadano.IdCiudadano, solicitud.IdTramite, solicitud.IdSede, solicitud.FechaHora, fechaFin, ip, solicitud.Navegador ?? "Desconocido", solicitud.SistemaOperativo ?? "Desconocido");
+
+                    await transaction.CommitAsync();
+                }
+                catch
+                {
+                    await transaction.RollbackAsync();
+                    throw;
+                }
+
+                var sedeEntity = await _context.Sedes.FindAsync(solicitud.IdSede);
+                string nombreSede = sedeEntity?.Nombre ?? "Oficina del Registro Civil";
+                string requisitosTramite = tramiteEntity.Requisitos ?? "Por favor comuníquese a la sede para confirmar los requisitos obligatorios.";
+
+                string nombreCompleto = $"{ciudadano.Nombre} {ciudadano.PrimerApellido} {ciudadano.SegundoApellido}".Trim();
+                string identificadorParaCorreo = !string.IsNullOrWhiteSpace(nombreCompleto) ? nombreCompleto : $"CURP: {ciudadano.Curp}";
+
+                await _emailService.EnviarCorreoConfirmacionAsync(ciudadano.Correo, identificadorParaCorreo, folio, solicitud.FechaHora, tramiteEntity.NombreTramite, tramiteEntity.Costo, nombreSede, requisitosTramite);
+
+                return Ok(new { mensaje = "Cita agendada con éxito", folio = folio });
+            }
+            catch (Exception)
+            {
+                return StatusCode(500, new { mensaje = "Ha ocurrido un error interno en el servidor." });
+            }
+        }
+
+        [HttpGet("{folio}")]
+        public async Task<ActionResult> ObtenerCita(string folio, [FromQuery] string captchaToken)
+        {
+            if (!await ValidarReCaptcha(captchaToken))
+                return BadRequest(new { mensaje = "Verificación de seguridad fallida. Complete el Captcha." });
+
+            await AutoActualizarInasistenciasAsync();
+
+            var cita = await _context.Citas
+                .Include(c => c.IdCiudadanoNavigation)
+                .Include(c => c.IdTramiteNavigation)
+                .Include(c => c.IdSedeNavigation)
+                .FirstOrDefaultAsync(c => c.IdCita == folio);
+
+            if (cita == null) return NotFound(new { mensaje = "No se encontró ninguna cita registrada con este folio." });
+
+            return Ok(new
+            {
+                folio = cita.IdCita,
+                estatus = cita.Estatus,
+                fecha = cita.FechaHoraInicio.ToString("yyyy-MM-dd"),
+                hora = cita.FechaHoraInicio.ToString("HH:mm"),
+                idTramite = cita.IdTramite,
+                tramite = cita.IdTramiteNavigation.NombreTramite,
+                requisitos = cita.IdTramiteNavigation.Requisitos,
+                costo = cita.IdTramiteNavigation.Costo,
+                duracion = cita.IdTramiteNavigation.DuracionMinutos,
+                idSede = cita.IdSede,
+                sede = cita.IdSedeNavigation.Nombre,
+                direccion = cita.IdSedeNavigation.Direccion,
+                ciudadano = $"{cita.IdCiudadanoNavigation.Nombre} {cita.IdCiudadanoNavigation.PrimerApellido} {cita.IdCiudadanoNavigation.SegundoApellido}".Trim(),
+                curp = cita.IdCiudadanoNavigation.Curp
+            });
+        }
+
+        [HttpPut("{folio}/cancelar")]
+        public async Task<ActionResult> CancelarCita(string folio)
+        {
+            var cita = await _context.Citas.FirstOrDefaultAsync(c => c.IdCita == folio);
+            if (cita == null) return NotFound(new { mensaje = "Cita no encontrada." });
+            if (cita.Estatus == "CANCELADA") return BadRequest(new { mensaje = "La cita ya se encuentra cancelada." });
+            if (cita.FechaHoraInicio < DateTime.Now) return BadRequest(new { mensaje = "No se puede cancelar una cita de una fecha que ya pasó." });
+
+            cita.Estatus = "CANCELADA";
+
+            // --- INICIO BLINDAJE DE CONCURRENCIA ---
+            try
+            {
+                await _context.SaveChangesAsync();
+            }
+            catch (DbUpdateConcurrencyException)
+            {
+                return StatusCode(StatusCodes.Status409Conflict, new
+                {
+                    mensaje = "Alerta de Concurrencia: Otro empleado acaba de modificar el estatus de esta cita. Por favor, recargue la tabla para ver la información más reciente y evitar sobreescribir datos."
+                });
+            }
+            // --- FIN BLINDAJE DE CONCURRENCIA ---
+
+            return Ok(new { mensaje = "Su cita ha sido cancelada con éxito. El espacio ha sido liberado." });
+        }
+
+        [HttpPut("{folio}/reagendar")]
+        public async Task<ActionResult> ReagendarCita(string folio, [FromBody] ReagendarDTO dto)
+        {
+            var cita = await _context.Citas
+                .Include(c => c.IdCiudadanoNavigation)
+                .Include(c => c.IdTramiteNavigation)
+                .Include(c => c.IdSedeNavigation)
+                .FirstOrDefaultAsync(c => c.IdCita == folio);
+
+            if (cita == null) return NotFound(new { mensaje = "Cita no encontrada." });
+            if (cita.Estatus == "CANCELADA" || cita.Estatus == "ATENDIDA" || cita.Estatus == "NO_ASISTIO" || cita.Estatus == "REPROGRAMADA")
+                return BadRequest(new { mensaje = "Solo se permite reprogramar la cita una vez. El estatus actual es " + cita.Estatus });
+
+            int duracion = cita.IdTramiteNavigation.DuracionMinutos > 0 ? cita.IdTramiteNavigation.DuracionMinutos : 30;
+            DateTime nuevaFechaFin = dto.NuevaFechaHora.AddMinutes(duracion);
+
+            await using var transaction = await _context.Database.BeginTransactionAsync(System.Data.IsolationLevel.Serializable);
+            try
+            {
+                bool solapada = await _context.Citas.AnyAsync(c =>
+                    c.IdCita != folio &&
+                    c.IdSede == cita.IdSede &&
+                    (c.Estatus == "PROGRAMADA" || c.Estatus == "REPROGRAMADA") &&
+                    c.FechaHoraInicio < nuevaFechaFin &&
+                    c.FechaHoraFin > dto.NuevaFechaHora);
+
+                if (solapada)
+                {
+                    await transaction.RollbackAsync();
+                    return BadRequest(new { mensaje = "Ese horario acaba de ser tomado por otro ciudadano. Por favor seleccione otro horario disponible." });
+                }
+
+                cita.FechaHoraInicio = dto.NuevaFechaHora;
+                cita.FechaHoraFin = nuevaFechaFin;
+                cita.Estatus = "REPROGRAMADA";
+
+                await _context.SaveChangesAsync();
+                await transaction.CommitAsync();
+            }
+            // --- INICIO BLINDAJE DE CONCURRENCIA ---
+            catch (DbUpdateConcurrencyException)
+            {
+                await transaction.RollbackAsync();
+                return StatusCode(StatusCodes.Status409Conflict, new
+                {
+                    mensaje = "Alerta de Concurrencia: Otro empleado acaba de modificar el estatus de esta cita. Por favor, recargue la tabla para ver la información más reciente y evitar sobreescribir datos."
+                });
+            }
+            // --- FIN BLINDAJE DE CONCURRENCIA ---
+            catch
+            {
+                await transaction.RollbackAsync();
+                throw;
+            }
+
+            string nombreCompleto = $"{cita.IdCiudadanoNavigation.Nombre} {cita.IdCiudadanoNavigation.PrimerApellido} {cita.IdCiudadanoNavigation.SegundoApellido}".Trim();
+            string identificadorParaCorreo = !string.IsNullOrWhiteSpace(nombreCompleto) ? nombreCompleto : $"CURP: {cita.IdCiudadanoNavigation.Curp}";
+
+            await _emailService.EnviarCorreoConfirmacionAsync(cita.IdCiudadanoNavigation.Correo, identificadorParaCorreo, folio, dto.NuevaFechaHora, cita.IdTramiteNavigation.NombreTramite, cita.IdTramiteNavigation.Costo, cita.IdSedeNavigation.Nombre, cita.IdTramiteNavigation.Requisitos, true);
+
+            return Ok(new { mensaje = "Cita reagendada con éxito." });
+        }
+
+        [HttpGet("PorSede/{idSede}")]
+        [Authorize]
+        public async Task<ActionResult> ObtenerCitasPorSede(int idSede, [FromQuery] string? fecha = null, [FromQuery] string? busqueda = null, [FromQuery] int pagina = 1, [FromQuery] int registrosPorPagina = 50)
+        {
+
+            var userSedeClaim = User.FindFirst("SedeId")?.Value;
+            var userRole = User.FindFirst(ClaimTypes.Role)?.Value;
+
+            if (userRole != "Super Administrador" && userSedeClaim != idSede.ToString())
+            {
+                return StatusCode(403, new { mensaje = "Acceso denegado. No tienes permisos para consultar las citas de otra sede." });
+            }
+
+            await AutoActualizarInasistenciasAsync();
+            var query = _context.Citas.Include(c => c.IdCiudadanoNavigation).Include(c => c.IdTramiteNavigation).Where(c => c.IdSede == idSede).AsQueryable();
+
+            if (!string.IsNullOrWhiteSpace(busqueda))
+            {
+                busqueda = busqueda.ToLower();
+                query = query.Where(c => c.IdCita.ToLower().Contains(busqueda) || c.IdCiudadanoNavigation.Curp.ToLower().Contains(busqueda) || c.IdCiudadanoNavigation.Nombre.ToLower().Contains(busqueda) || c.IdCiudadanoNavigation.PrimerApellido.ToLower().Contains(busqueda));
+            }
+            else
+            {
+                DateTime fechaFiltro = DateTime.Today;
+                if (!string.IsNullOrEmpty(fecha) && DateTime.TryParse(fecha, out DateTime parsedDate)) fechaFiltro = parsedDate.Date;
+                query = query.Where(c => c.FechaHoraInicio.Year == fechaFiltro.Year && c.FechaHoraInicio.Month == fechaFiltro.Month && c.FechaHoraInicio.Day == fechaFiltro.Day);
+            }
+
+            bool isSuperAdmin = userRole == "Super Administrador";
+
+
+            int totalRegistros = await query.CountAsync();
+            int totalPaginas = (int)Math.Ceiling(totalRegistros / (double)registrosPorPagina);
+            int registrosASaltar = (pagina - 1) * registrosPorPagina;
+
+            var citas = await query
+                .OrderBy(c => c.FechaHoraInicio)
+                .Skip(registrosASaltar)
+                .Take(registrosPorPagina)
+                .Select(c => new {
+                    folio = c.IdCita,
+                    ciudadano = $"{c.IdCiudadanoNavigation.Nombre} {c.IdCiudadanoNavigation.PrimerApellido} {c.IdCiudadanoNavigation.SegundoApellido}".Trim(),
+                    curp = c.IdCiudadanoNavigation.Curp,
+                    tramite = c.IdTramiteNavigation.NombreTramite,
+                    fechaStr = c.FechaHoraInicio.ToString("dd/MM/yyyy"),
+                    hora = c.FechaHoraInicio.ToString("HH:mm"),
+                    estatus = c.Estatus,
+                    ip = isSuperAdmin ? c.IpOrigen : null,
+                    navegador = isSuperAdmin ? c.Navegador : null,
+                    so = isSuperAdmin ? c.SistemaOperativo : null
+                })
+                .ToListAsync();
+
+            return Ok(new
+            {
+                totalRegistros = totalRegistros,
+                totalPaginas = totalPaginas,
+                paginaActual = pagina,
+                datos = citas
+            });
+        }
+
+        [HttpPut("{folio}/actualizarEstatus")]
+        [Authorize]
+        public async Task<ActionResult> ActualizarEstatus(string folio, [FromBody] CambioEstatusDTO dto)
+        {
+            var cita = await _context.Citas.FirstOrDefaultAsync(c => c.IdCita == folio);
+            if (cita == null) return NotFound(new { mensaje = "Cita no encontrada." });
+
+            var usernameClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+            var userSedeClaim = User.FindFirst("SedeId")?.Value;
+            var userRole = User.FindFirst(ClaimTypes.Role)?.Value;
+
+            if (string.IsNullOrEmpty(usernameClaim))
+                return Unauthorized(new { mensaje = "Token inválido." });
+
+            if (userRole != "Super Administrador" && userSedeClaim != cita.IdSede.ToString())
+            {
+                return StatusCode(403, new { mensaje = "Acceso denegado. Esta cita pertenece a otra sede." });
+            }
+
+            var usuarioReal = await _context.UsuariosInternos.FirstOrDefaultAsync(u => u.Username == usernameClaim);
+            if (usuarioReal == null)
+                return Unauthorized(new { mensaje = "Usuario no encontrado en el sistema." });
+
+            int idUsuarioReal = usuarioReal.IdUsuario;
+
+            string valorAnterior = cita.Estatus;
+            cita.Estatus = dto.NuevoEstatus;
+
+            var bitacora = new BitacoraAuditorium
+            {
+                IdUsuarioInterno = idUsuarioReal,
+                TablaAfectada = "Citas",
+                AccionRealizada = "UPDATE",
+                RegistroId = folio,
+                ValorAnterior = $"Estatus: {valorAnterior}",
+                ValorNuevo = $"Estatus: {dto.NuevoEstatus}",
+                FechaCambio = DateTime.Now
+            };
+            _context.BitacoraAuditoria.Add(bitacora);
+
+
+            // --- INICIO BLINDAJE DE CONCURRENCIA ---
+            try
+            {
+                await _context.SaveChangesAsync();
+            }
+            catch (DbUpdateConcurrencyException)
+            {
+                return StatusCode(StatusCodes.Status409Conflict, new
+                {
+                    mensaje = "Alerta de Concurrencia: Otro empleado acaba de modificar el estatus de esta cita. Por favor, recargue la tabla para ver la información más reciente y evitar sobreescribir datos."
+                });
+            }
+            // --- FIN BLINDAJE DE CONCURRENCIA ---
+
+            return Ok(new { mensaje = $"La cita se ha marcado como {dto.NuevoEstatus} correctamente." });
+        }
+
+        private async Task<bool> ValidarReCaptcha(string token)
+        {
+            if (string.IsNullOrEmpty(token)) return false;
+
+            var secret = _config["RecaptchaSettings:SecretKey"];
+
+            var client = _httpClientFactory.CreateClient();
+            var response = await client.PostAsync($"https://www.google.com/recaptcha/api/siteverify?secret={secret}&response={token}", null);
+            var json = await response.Content.ReadAsStringAsync();
+            using var doc = System.Text.Json.JsonDocument.Parse(json);
+            return doc.RootElement.GetProperty("success").GetBoolean();
+        }
+    }
+
+    public class CambioEstatusDTO { public string NuevoEstatus { get; set; } public int IdUsuarioInterno { get; set; } }
+    public class ReagendarDTO { public DateTime NuevaFechaHora { get; set; } }
+    public class CitaDTO
+    {
+        public string Curp { get; set; }
+        public string Nombre { get; set; }
+        public string Correo { get; set; }
+        public string Telefono { get; set; }
+        public string MunicipioRegistro { get; set; }
+        public string EstadoRegistro { get; set; }
+        public int IdTramite { get; set; }
+        public int IdSede { get; set; }
+        public DateTime FechaHora { get; set; }
+        public string Navegador { get; set; }
+        public string SistemaOperativo { get; set; }
+        public string CaptchaToken { get; set; }
+    }
+}
+</file>
+
+<file path="Controllers/ConfiguracionController.cs">
+using System;
+using System.Linq;
+using System.Threading.Tasks;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
+using RegistroCivilAPI.Models;
+
+namespace RegistroCivilAPI.Controllers
+{
+    [Route("api/[controller]")]
+    [ApiController]
+    public class ConfiguracionController : ControllerBase
+    {
+        private readonly RegistroCivilCitasContext _context;
+
+        public ConfiguracionController(RegistroCivilCitasContext context) { _context = context; }
+
+        [HttpGet("ReglasCalendario")]
+        public async Task<ActionResult> GetReglas()
+        {
+            var rango = await _context.ConfiguracionAgendas.FirstOrDefaultAsync(c => c.Id == 1);
+            var dias = await _context.DiasInhabiles.Select(d => new { id = d.IdDiaInhabil, fecha = d.FechaBloqueada, motivo = d.Motivo }).ToListAsync();
+            return Ok(new { rango = rango, diasInhabiles = dias });
+        }
+        [Authorize(Roles = "Administrador,Super Administrador")]
+        [HttpPut("Rango")]
+        public async Task<ActionResult> UpdateRango([FromBody] ConfiguracionAgenda dto)
+        {
+            if (dto.FechaInicio.Date >= dto.FechaFin.Date)
+            {
+                return BadRequest(new { mensaje = "La fecha de inicio debe ser anterior a la fecha de fin." });
+            }
+
+            var rango = await _context.ConfiguracionAgendas.FirstOrDefaultAsync(c => c.Id == 1);
+            if (rango == null)
+            {
+                rango = new ConfiguracionAgenda { Id = 1, FechaInicio = dto.FechaInicio, FechaFin = dto.FechaFin };
+                _context.ConfiguracionAgendas.Add(rango);
+            }
+            else
+            {
+                rango.FechaInicio = dto.FechaInicio; rango.FechaFin = dto.FechaFin;
+            }
+            await _context.SaveChangesAsync();
+            return Ok(new { mensaje = "Rango de fechas de reservación actualizado." });
+        }
+        [Authorize(Roles = "Administrador,Super Administrador")]
+        [HttpPost("DiasInhabiles")]
+        public async Task<ActionResult> AddDiaInhabil([FromBody] DiaInhabilDTO dto)
+        {
+            var nuevoDia = new DiasInhabile { FechaBloqueada = DateOnly.FromDateTime(dto.Fecha), Motivo = dto.Motivo, IdSede = null };
+            _context.DiasInhabiles.Add(nuevoDia);
+            await _context.SaveChangesAsync();
+            return Ok(new { mensaje = "Día inhábil registrado correctamente. El calendario ha sido bloqueado." });
+        }
+
+        [Authorize(Roles = "Administrador,Super Administrador")]
+        [HttpDelete("DiasInhabiles/{id}")]
+        public async Task<ActionResult> DeleteDiaInhabil(int id)
+        {
+            var dia = await _context.DiasInhabiles.FindAsync(id);
+            if (dia == null) return NotFound();
+            _context.DiasInhabiles.Remove(dia);
+            await _context.SaveChangesAsync();
+            return Ok(new { mensaje = "Día inhábil eliminado. El día vuelve a estar disponible." });
+        }
+    }
+    public class DiaInhabilDTO { public DateTime Fecha { get; set; } public string Motivo { get; set; } }
+}
+</file>
+
+<file path="Controllers/PeticionesController.cs">
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
+using RegistroCivilAPI.Models;
+using System;
+using System.Collections.Generic;
+using System.Threading.Tasks;
+using Microsoft.AspNetCore.Authorization;
+using System.Security.Claims;
+// Necesario para HttpClient
+using System.Net.Http;
+
+namespace RegistroCivilAPI.Controllers
+{
+    [Route("api/[controller]")]
+    [ApiController]
+    public class PeticionesController : ControllerBase
+    {
+        private readonly RegistroCivilCitasContext _context;
+        private readonly IHttpClientFactory _httpClientFactory;
+        private readonly IConfiguration _config;
+
+        public PeticionesController(RegistroCivilCitasContext context, IHttpClientFactory httpClientFactory, IConfiguration config)
+        {
+            _context = context;
+            _httpClientFactory = httpClientFactory;
+            _config = config;
+        }
+
+        [HttpGet]
+        [Authorize(Roles = "Super Administrador")]
+        public async Task<ActionResult> GetPeticiones()
+        {
+            var peticiones = new List<object>();
+            using (var command = _context.Database.GetDbConnection().CreateCommand())
+            {
+                command.CommandText = "SELECT id_peticion, username_solicitante, tipo_peticion, descripcion, estatus, fecha_solicitud, respuesta, leido FROM Peticiones_Soporte ORDER BY fecha_solicitud DESC";
+                await _context.Database.OpenConnectionAsync();
+
+                using (var result = await command.ExecuteReaderAsync())
+                {
+                    while (await result.ReadAsync())
+                    {
+                        peticiones.Add(new
+                        {
+                            idPeticion = result.GetInt32(0),
+                            username = result.GetString(1),
+                            tipo = result.GetString(2),
+                            descripcion = result.GetString(3),
+                            estatus = result.GetString(4),
+                            fecha = result.GetDateTime(5),
+                            respuesta = result.IsDBNull(6) ? "" : result.GetString(6),
+                            leido = result.IsDBNull(7) ? false : result.GetBoolean(7)
+                        });
+                    }
+                }
+            }
+            return Ok(peticiones);
+        }
+
+        [HttpGet("MisPeticiones/{username}")]
+        [Authorize]
+        public async Task<ActionResult> GetMisPeticiones(string username)
+        {
+
+            var tokenUsername = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+            var userRole = User.FindFirst(ClaimTypes.Role)?.Value;
+
+            if (userRole != "Super Administrador" && !string.Equals(tokenUsername, username, StringComparison.OrdinalIgnoreCase))
+            {
+                return StatusCode(403, new { mensaje = "Acceso denegado. Solo puedes consultar tus propias peticiones de soporte." });
+            }
+
+            var peticiones = new List<object>();
+            using (var command = _context.Database.GetDbConnection().CreateCommand())
+            {
+                command.CommandText = "SELECT id_peticion, tipo_peticion, descripcion, estatus, fecha_solicitud, respuesta, leido FROM Peticiones_Soporte WHERE username_solicitante = @username ORDER BY fecha_solicitud DESC";
+
+                var paramUsername = command.CreateParameter();
+                paramUsername.ParameterName = "@username";
+                paramUsername.Value = username;
+                command.Parameters.Add(paramUsername);
+
+                await _context.Database.OpenConnectionAsync();
+
+                using (var result = await command.ExecuteReaderAsync())
+                {
+                    while (await result.ReadAsync())
+                    {
+                        peticiones.Add(new
+                        {
+                            idPeticion = result.GetInt32(0),
+                            tipo = result.GetString(1),
+                            descripcion = result.GetString(2),
+                            estatus = result.GetString(3),
+                            fecha = result.GetDateTime(4),
+                            respuesta = result.IsDBNull(5) ? "" : result.GetString(5),
+                            leido = result.IsDBNull(6) ? false : result.GetBoolean(6)
+                        });
+                    }
+                }
+            }
+            return Ok(peticiones);
+        }
+
+        // =======================================================
+        // BLINDAJE CON reCAPTCHA APLICADO AQUÍ
+        // =======================================================
+        [HttpPost]
+        [AllowAnonymous]
+        public async Task<ActionResult> CreatePeticion([FromQuery] string captchaToken, [FromBody] NuevaPeticionDTO dto)
+        {
+            if (string.IsNullOrEmpty(captchaToken))
+            {
+                return BadRequest(new { mensaje = "Falta el token de seguridad reCAPTCHA." });
+            }
+
+            // ¡EL FIX ESTÁ AQUÍ! 
+            // Ahora coincide exactamente con el nombre de tu secrets.json (RecaptchaSettings)
+            var secretKey = _config["RecaptchaSettings:SecretKey"];
+
+            var client = _httpClientFactory.CreateClient();
+            var response = await client.PostAsync($"https://www.google.com/recaptcha/api/siteverify?secret={secretKey}&response={captchaToken}", null);
+
+            var jsonString = await response.Content.ReadAsStringAsync();
+            if (!jsonString.Contains("\"success\": true"))
+            {
+                return BadRequest(new { mensaje = "Validación reCAPTCHA fallida. Bot detectado." });
+            }
+
+            await _context.Database.ExecuteSqlRawAsync(
+                "INSERT INTO Peticiones_Soporte (username_solicitante, tipo_peticion, descripcion) VALUES ({0}, {1}, {2})",
+                dto.Username, dto.Tipo, dto.Descripcion);
+
+            return Ok(new { mensaje = "Tu solicitud ha sido enviada al departamento de Sistemas. Pronto será atendida." });
+        }
+        [HttpPut("{id}/resolver")]
+        [Authorize(Roles = "Super Administrador")]
+        public async Task<ActionResult> ResolverPeticion(int id, [FromBody] RespuestaDTO dto)
+        {
+            // Si viene NuevaPassword, aplicamos el reseteo al usuario solicitante
+            // en el mismo paso, para no depender de que el admin lo haga
+            // manualmente después en otra pantalla.
+            if (!string.IsNullOrWhiteSpace(dto.NuevaPassword))
+            {
+                string username = null;
+                using (var cmd = _context.Database.GetDbConnection().CreateCommand())
+                {
+                    cmd.CommandText = "SELECT username_solicitante FROM Peticiones_Soporte WHERE id_peticion = @id";
+                    var p = cmd.CreateParameter(); p.ParameterName = "@id"; p.Value = id; cmd.Parameters.Add(p);
+                    await _context.Database.OpenConnectionAsync();
+                    var result = await cmd.ExecuteScalarAsync();
+                    username = result?.ToString();
+                }
+
+                if (string.IsNullOrEmpty(username))
+                    return NotFound(new { mensaje = "Petición no encontrada." });
+
+                var usuario = await _context.UsuariosInternos.FirstOrDefaultAsync(u => u.Username == username);
+                if (usuario == null)
+                    return NotFound(new { mensaje = "El usuario solicitante ya no existe en el sistema." });
+
+                usuario.PasswordHash = BCrypt.Net.BCrypt.HashPassword(dto.NuevaPassword);
+                usuario.RequiereCambioPassword = true;
+                await _context.SaveChangesAsync();
+            }
+
+            await _context.Database.ExecuteSqlRawAsync(
+                "UPDATE Peticiones_Soporte SET estatus = 'RESUELTA', respuesta = {0}, leido = 0 WHERE id_peticion = {1}",
+                dto.Respuesta, id);
+
+            return Ok(new { mensaje = dto.NuevaPassword != null ? "Contraseña restablecida y petición resuelta." : "Petición marcada como resuelta y mensaje enviado al usuario." });
+        }
+
+        [HttpPut("MarcarLeidasAdmin")]
+        [Authorize(Roles = "Super Administrador")]
+        public async Task<ActionResult> MarcarLeidasAdmin()
+        {
+            await _context.Database.ExecuteSqlRawAsync("UPDATE Peticiones_Soporte SET leido = 1 WHERE estatus = 'PENDIENTE'");
+            return Ok();
+        }
+
+        [HttpPut("MarcarLeidasUsuario/{username}")]
+        [Authorize]
+        public async Task<ActionResult> MarcarLeidasUsuario(string username)
+        {
+
+            var tokenUsername = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+            var userRole = User.FindFirst(ClaimTypes.Role)?.Value;
+
+            if (userRole != "Super Administrador" && !string.Equals(tokenUsername, username, StringComparison.OrdinalIgnoreCase))
+            {
+                return StatusCode(403, new { mensaje = "Acceso denegado. No tienes permisos para alterar este registro." });
+            }
+
+            await _context.Database.ExecuteSqlRawAsync("UPDATE Peticiones_Soporte SET leido = 1 WHERE username_solicitante = {0} AND estatus = 'RESUELTA'", username);
+            return Ok();
+        }
+    }
+
+    public class NuevaPeticionDTO { public string Username { get; set; } public string Tipo { get; set; } public string Descripcion { get; set; } }
+    public class RespuestaDTO { public string Respuesta { get; set; } public string NuevaPassword { get; set; } }
+}
+</file>
+
+<file path="Controllers/SedesController.cs">
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
+using RegistroCivilAPI.Models;
+
+namespace RegistroCivilAPI.Controllers
+{
+    
+    [Route("api/[controller]")]
+    [ApiController]
+    public class SedesController : ControllerBase
+    {
+       
+        private readonly RegistroCivilCitasContext _context;
+
+       
+        public SedesController(RegistroCivilCitasContext context)
+        {
+            _context = context;
+        }
+
+      
+        [HttpGet]
+        public async Task<ActionResult<IEnumerable<Sede>>> GetSedes()
+        {
+            
+            if (_context.Sedes == null)
+            {
+                return NotFound("No se encontró la tabla de Sedes en la base de datos.");
+            }
+
+           
+            var sedes = await _context.Sedes
+                                      .Where(sede => sede.Activa == true)
+                                      .ToListAsync();
+
+            
+            return Ok(sedes);
+        }
+    }
+}
+</file>
+
+<file path="Controllers/TramitesController.cs">
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
+using RegistroCivilAPI.Models;
+using System.Linq;
+using System.Threading.Tasks;
+using Microsoft.AspNetCore.Authorization;
+
+namespace RegistroCivilAPI.Controllers
+{
+    [Route("api/[controller]")]
+    [ApiController]
+    public class TramitesController : ControllerBase
+    {
+        private readonly RegistroCivilCitasContext _context;
+
+        public TramitesController(RegistroCivilCitasContext context)
+        {
+            _context = context;
+        }
+
+        
+        [HttpGet]
+        public async Task<ActionResult> GetTramitesActivos()
+        {
+            var categorias = await _context.CategoriasTramites
+                .Where(c => c.Activa == true)
+                .Select(c => new {
+                    c.IdCategoria,
+                    c.NombreCategoria,
+                    c.Descripcion,
+                    Tramites = _context.Tramites.Where(t => t.IdCategoria == c.IdCategoria && t.Activo == true).ToList()
+                }).ToListAsync();
+
+            return Ok(categorias.Where(c => c.Tramites.Any()));
+        }
+
+    
+        [HttpGet("Admin")]
+        [Authorize(Roles = "Super Administrador")]
+        public async Task<ActionResult> GetTramitesAdmin()
+        {
+            var categorias = await _context.CategoriasTramites
+                .Select(c => new {
+                    c.IdCategoria,
+                    c.NombreCategoria,
+                    c.Descripcion,
+                    c.Activa,
+                    Tramites = _context.Tramites.Where(t => t.IdCategoria == c.IdCategoria).ToList()
+                }).ToListAsync();
+
+            return Ok(categorias);
+        }
+
+     
+        [HttpPut("Categoria/{idCategoria}")]
+        [Authorize(Roles = "Super Administrador")]
+        public async Task<ActionResult> UpdateCategoria(int idCategoria, [FromBody] CategoriaUpdateDTO dto)
+        {
+            var categoria = await _context.CategoriasTramites.FindAsync(idCategoria);
+            if (categoria == null) return NotFound(new { mensaje = "Categoría no encontrada." });
+
+       
+            categoria.Activa = dto.Activo;
+
+            var tramites = await _context.Tramites.Where(t => t.IdCategoria == idCategoria).ToListAsync();
+
+           
+            foreach (var t in tramites)
+            {
+                t.DuracionMinutos = dto.DuracionMinutos;
+                t.Costo = dto.Costo;
+                t.Activo = dto.Activo;
+                t.LimiteDiarioSede = dto.LimiteDiario;
+                t.FechaInicioPermitida = dto.FechaInicio; 
+                t.FechaFinPermitida = dto.FechaFin;       
+            }
+
+            await _context.SaveChangesAsync();
+            return Ok(new { mensaje = "Configuración aplicada exitosamente a todos los servicios de esta categoría." });
+        }
+    }
+
+    public class CategoriaUpdateDTO
+    {
+        public int DuracionMinutos { get; set; }
+        public decimal Costo { get; set; }
+        public bool Activo { get; set; }
+        public int LimiteDiario { get; set; }
+        public DateTime? FechaInicio { get; set; }
+        public DateTime? FechaFin { get; set; }
+    }
+}
+</file>
+
+<file path="Controllers/UsuariosController.cs">
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
+using RegistroCivilAPI.Models;
+using System.Collections.Generic;
+using System.Linq;
+using System.Threading.Tasks;
+using Microsoft.AspNetCore.Authorization;
+using System.ComponentModel.DataAnnotations;
+using System;
+
+namespace RegistroCivilAPI.Controllers
+{
+    [Route("api/[controller]")]
+    [ApiController]
+    public class UsuariosController : ControllerBase
+    {
+        private readonly RegistroCivilCitasContext _context;
+
+        public UsuariosController(RegistroCivilCitasContext context)
+        {
+            _context = context;
+        }
+
+        [HttpGet]
+        [Authorize(Roles = "Super Administrador")]
+        public async Task<ActionResult<IEnumerable<object>>> GetUsuarios()
+        {
+            return await _context.UsuariosInternos
+                .Include(u => u.IdRolNavigation)
+                .Include(u => u.IdSedeNavigation)
+                .Select(u => new
+                {
+                    u.IdUsuario,
+                    u.Username,
+                    u.NombreCompleto,
+                    u.Activo,
+                    u.IdSede,
+                    Rol = u.IdRolNavigation.NombreRol,
+                    Sede = u.IdSedeNavigation.Nombre
+                }).ToListAsync();
+        }
+
+        [HttpPost]
+        [Authorize(Roles = "Super Administrador")]
+        public async Task<ActionResult> CrearUsuario([FromBody] NuevoUsuarioDTO dto)
+        {
+            if (await _context.UsuariosInternos.AnyAsync(u => u.Username == dto.Username))
+                return BadRequest(new { mensaje = "El nombre de usuario ya existe." });
+
+            var usr = new UsuariosInterno
+            {
+                Username = dto.Username,
+                NombreCompleto = dto.NombreCompleto,
+                PasswordHash = BCrypt.Net.BCrypt.HashPassword(dto.Password),
+                IdRol = dto.IdRol,
+                IdSede = dto.IdSede,
+                Activo = true,
+                RequiereCambioPassword = true
+            };
+
+            _context.UsuariosInternos.Add(usr);
+            await _context.SaveChangesAsync();
+
+            return Ok(new { mensaje = "Usuario creado exitosamente." });
+        }
+
+        [HttpPut("{id}/estado")]
+        [Authorize(Roles = "Super Administrador")]
+        public async Task<ActionResult> ToggleEstado(int id)
+        {
+            var usr = await _context.UsuariosInternos.FindAsync(id);
+            if (usr == null) return NotFound();
+
+            usr.Activo = !usr.Activo;
+            await _context.SaveChangesAsync();
+            return Ok();
+        }
+
+        [HttpPut("{id}/password")]
+        [Authorize]
+        public async Task<ActionResult> CambiarPassword(int id, [FromBody] PasswordDTO dto)
+        {
+            
+            var esSuperAdmin = User.IsInRole("Super Administrador");
+            var idClaim = User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value;
+
+            if (!esSuperAdmin)
+            {
+                if (idClaim == null || !int.TryParse(idClaim, out int idAutenticado) || idAutenticado != id)
+                {
+                    return Forbid();
+                }
+            }
+
+            var usr = await _context.UsuariosInternos.FindAsync(id);
+            if (usr == null) return NotFound(new { mensaje = "Usuario no encontrado." });
+
+            usr.PasswordHash = BCrypt.Net.BCrypt.HashPassword(dto.Password);
+            usr.RequiereCambioPassword = false;
+
+            await _context.SaveChangesAsync();
+            return Ok(new { mensaje = "Contraseña actualizada correctamente." });
+        }
+
+        [HttpPut("{id}/sede")]
+        [Authorize(Roles = "Super Administrador")]
+        public async Task<ActionResult> CambiarSede(int id, [FromBody] SedeDTO dto)
+        {
+            var usr = await _context.UsuariosInternos.FindAsync(id);
+            if (usr == null) return NotFound();
+
+            usr.IdSede = dto.IdSede;
+            await _context.SaveChangesAsync();
+            return Ok(new { mensaje = "Sede actualizada." });
+        }
+
+        [HttpGet("Soporte")]
+        [Authorize]  
+        public async Task<ActionResult> GetUsuariosSoporte()
+        {
+            var usuarios = await _context.UsuariosInternos
+                .Select(u => new { u.Username, u.NombreCompleto })
+                .ToListAsync();
+            return Ok(usuarios);
+        }
+        [HttpGet("Accesos")]
+        [Authorize(Roles = "Super Administrador")]
+        public async Task<ActionResult> GetAccesos([FromQuery] int page = 1, [FromQuery] int pageSize = 10, [FromQuery] string? fecha = null, [FromQuery] string? busqueda = null)
+        {
+            var query = _context.RegistroAccesos.AsQueryable();
+
+            if (!string.IsNullOrWhiteSpace(busqueda))
+            {
+                query = query.Where(a => a.Username.Contains(busqueda) || a.IdAcceso.ToString() == busqueda);
+            }
+            else if (!string.IsNullOrWhiteSpace(fecha) && System.DateTime.TryParse(fecha, out System.DateTime parsedDate))
+            {
+                query = query.Where(a => a.FechaLogin.HasValue && a.FechaLogin.Value.Date == parsedDate.Date);
+            }
+
+            int total = await query.CountAsync();
+            var accesos = await query.OrderByDescending(a => a.FechaLogin)
+                                     .Skip((page - 1) * pageSize)
+                                     .Take(pageSize)
+                                     .ToListAsync();
+
+            return Ok(new
+            {
+                TotalRegistros = total,
+                PaginaActual = page,
+                TotalPaginas = (int)System.Math.Ceiling((double)total / pageSize),
+                Datos = accesos
+            });
+        }
+
+        [HttpPut("Accesos/{idAcceso}/cerrar")]
+        [Authorize(Roles = "Super Administrador")]
+        public async Task<ActionResult> CerrarSesionRemota(int idAcceso)
+        {
+            var acceso = await _context.RegistroAccesos.FindAsync(idAcceso);
+            if (acceso == null) return NotFound(new { mensaje = "Registro no encontrado." });
+            if (acceso.FechaLogout != null) return BadRequest(new { mensaje = "La sesión ya se encontraba cerrada." });
+
+            acceso.FechaLogout = DateTime.Now;
+            await _context.SaveChangesAsync();
+            return Ok(new { mensaje = "Sesión cerrada remotamente de forma exitosa." });
+        }
+
+        [HttpGet("EstadoSesion/{username}")]
+        [Authorize]
+        public async Task<ActionResult> VerificarEstadoSesionUsuario(string username)
+        {
+            var ultimoAcceso = await _context.RegistroAccesos
+                .Where(a => a.Username == username)
+                .OrderByDescending(a => a.FechaLogin)
+                .FirstOrDefaultAsync();
+
+            if (ultimoAcceso == null || ultimoAcceso.FechaLogout != null)
+                return Ok(new { activa = false });
+
+            return Ok(new { activa = true });
+        }
+    }
+
+   
+
+    public class NuevoUsuarioDTO
+    {
+        [Required(ErrorMessage = "El nombre de usuario es obligatorio.")]
+        public string Username { get; set; }
+
+        [Required(ErrorMessage = "La contraseña es obligatoria.")]
+        [RegularExpression(@"^(?=.*[A-Z])(?=.*\d)(?=.*[\W_]).{6,}$", ErrorMessage = "La contraseña debe tener mínimo 6 caracteres, 1 mayúscula, 1 número y 1 carácter especial.")]
+        public string Password { get; set; }
+
+        [Required(ErrorMessage = "El nombre completo es obligatorio.")]
+        public string NombreCompleto { get; set; }
+
+        public int IdRol { get; set; }
+        public int IdSede { get; set; }
+    }
+
+    public class PasswordDTO
+    {
+        [Required(ErrorMessage = "La contraseña es obligatoria.")]
+        [RegularExpression(@"^(?=.*[A-Z])(?=.*\d)(?=.*[\W_]).{6,}$", ErrorMessage = "La contraseña debe tener mínimo 6 caracteres, 1 mayúscula, 1 número y 1 carácter especial.")]
+        public string Password { get; set; }
+    }
+
+    public class SedeDTO
+    {
+        public int IdSede { get; set; }
+    }
+}
+</file>
+
+<file path="DTOs/CitaResponseDTO.cs">
+namespace RegistroCivilAPI.DTOs
+{
+    public class CitaResponseDTO
+    {
+        public int Id { get; set; }
+        public DateTime FechaCita { get; set; }
+        public string TramiteNombre { get; set; } 
+        public string SedeNombre { get; set; }
+        
+    }
+}
+</file>
+
+<file path="Migrations/20260923164315_InicialCloud.cs">
+using System;
+using Microsoft.EntityFrameworkCore.Migrations;
+
+#nullable disable
+
+namespace RegistroCivilAPI.Migrations
+{
+    /// <inheritdoc />
+    public partial class InicialCloud : Migration
+    {
+        /// <inheritdoc />
+        protected override void Up(MigrationBuilder migrationBuilder)
+        {
+            migrationBuilder.CreateTable(
+                name: "Avisos_Globales",
+                columns: table => new
+                {
+                    id_aviso = table.Column<int>(type: "int", nullable: false)
+                        .Annotation("SqlServer:Identity", "1, 1"),
+                    titulo = table.Column<string>(type: "varchar(100)", unicode: false, maxLength: 100, nullable: false),
+                    mensaje = table.Column<string>(type: "text", nullable: false),
+                    activo = table.Column<bool>(type: "bit", nullable: true, defaultValue: true),
+                    imagen_url = table.Column<string>(type: "varchar(500)", unicode: false, maxLength: 500, nullable: true)
+                },
+                constraints: table =>
+                {
+                    table.PrimaryKey("PK_AvisosGlobales", x => x.id_aviso);
+                });
+
+            migrationBuilder.CreateTable(
+                name: "Categorias_Tramites",
+                columns: table => new
+                {
+                    id_categoria = table.Column<int>(type: "int", nullable: false)
+                        .Annotation("SqlServer:Identity", "1, 1"),
+                    nombre_categoria = table.Column<string>(type: "varchar(100)", unicode: false, maxLength: 100, nullable: false),
+                    descripcion = table.Column<string>(type: "varchar(255)", nullable: true),
+                    activa = table.Column<bool>(type: "bit", nullable: true, defaultValue: true)
+                },
+                constraints: table =>
+                {
+                    table.PrimaryKey("PK__Categori__CD54BC5ADDE5FCC4", x => x.id_categoria);
+                });
+
+            migrationBuilder.CreateTable(
+                name: "Ciudadanos",
+                columns: table => new
+                {
+                    id_ciudadano = table.Column<int>(type: "int", nullable: false)
+                        .Annotation("SqlServer:Identity", "1, 1"),
+                    curp = table.Column<string>(type: "varchar(18)", unicode: false, maxLength: 18, nullable: false),
+                    nombre = table.Column<string>(type: "varchar(50)", unicode: false, maxLength: 50, nullable: false),
+                    primer_apellido = table.Column<string>(type: "varchar(50)", unicode: false, maxLength: 50, nullable: false),
+                    segundo_apellido = table.Column<string>(type: "varchar(50)", unicode: false, maxLength: 50, nullable: true),
+                    correo = table.Column<string>(type: "varchar(100)", unicode: false, maxLength: 100, nullable: true),
+                    telefono = table.Column<string>(type: "varchar(15)", unicode: false, maxLength: 15, nullable: true),
+                    origen_registro = table.Column<string>(type: "varchar(150)", unicode: false, maxLength: 150, nullable: true)
+                },
+                constraints: table =>
+                {
+                    table.PrimaryKey("PK__Ciudadan__676FF54B1A98BECA", x => x.id_ciudadano);
+                });
+
+            migrationBuilder.CreateTable(
+                name: "Configuracion_Agenda",
+                columns: table => new
+                {
+                    id = table.Column<int>(type: "int", nullable: false)
+                        .Annotation("SqlServer:Identity", "1, 1"),
+                    fecha_inicio = table.Column<DateTime>(type: "date", nullable: false),
+                    fecha_fin = table.Column<DateTime>(type: "date", nullable: false)
+                },
+                constraints: table =>
+                {
+                    table.PrimaryKey("PK_Configuracion_Agenda", x => x.id);
+                });
+
+            migrationBuilder.CreateTable(
+                name: "Registro_Accesos",
+                columns: table => new
+                {
+                    id_acceso = table.Column<int>(type: "int", nullable: false)
+                        .Annotation("SqlServer:Identity", "1, 1"),
+                    username = table.Column<string>(type: "varchar(50)", unicode: false, maxLength: 50, nullable: false),
+                    fecha_login = table.Column<DateTime>(type: "datetime", nullable: true),
+                    fecha_logout = table.Column<DateTime>(type: "datetime", nullable: true)
+                },
+                constraints: table =>
+                {
+                    table.PrimaryKey("PK_Registro_Accesos", x => x.id_acceso);
+                });
+
+            migrationBuilder.CreateTable(
+                name: "Roles",
+                columns: table => new
+                {
+                    id_rol = table.Column<int>(type: "int", nullable: false)
+                        .Annotation("SqlServer:Identity", "1, 1"),
+                    nombre_rol = table.Column<string>(type: "varchar(50)", unicode: false, maxLength: 50, nullable: false)
+                },
+                constraints: table =>
+                {
+                    table.PrimaryKey("PK__Roles__6ABCB5E0D56A4E16", x => x.id_rol);
+                });
+
+            migrationBuilder.CreateTable(
+                name: "Sedes",
+                columns: table => new
+                {
+                    id_sede = table.Column<int>(type: "int", nullable: false)
+                        .Annotation("SqlServer:Identity", "1, 1"),
+                    nombre = table.Column<string>(type: "varchar(100)", unicode: false, maxLength: 100, nullable: false),
+                    municipio = table.Column<string>(type: "varchar(50)", unicode: false, maxLength: 50, nullable: false),
+                    direccion = table.Column<string>(type: "varchar(255)", unicode: false, maxLength: 255, nullable: true),
+                    activa = table.Column<bool>(type: "bit", nullable: true, defaultValue: true)
+                },
+                constraints: table =>
+                {
+                    table.PrimaryKey("PK__Sedes__D693504B010B634E", x => x.id_sede);
+                });
+
+            migrationBuilder.CreateTable(
+                name: "Tramites",
+                columns: table => new
+                {
+                    id_tramite = table.Column<int>(type: "int", nullable: false)
+                        .Annotation("SqlServer:Identity", "1, 1"),
+                    id_categoria = table.Column<int>(type: "int", nullable: false),
+                    nombre_tramite = table.Column<string>(type: "varchar(100)", unicode: false, maxLength: 100, nullable: false),
+                    descripcion = table.Column<string>(type: "text", nullable: true),
+                    duracion_minutos = table.Column<int>(type: "int", nullable: false),
+                    limite_diario_sede = table.Column<int>(type: "int", nullable: false),
+                    costo = table.Column<decimal>(type: "decimal(10,2)", nullable: false),
+                    activo = table.Column<bool>(type: "bit", nullable: true, defaultValue: true),
+                    requisitos = table.Column<string>(type: "varchar(500)", nullable: true),
+                    fecha_inicio_permitida = table.Column<DateTime>(type: "date", nullable: true),
+                    fecha_fin_permitida = table.Column<DateTime>(type: "date", nullable: true)
+                },
+                constraints: table =>
+                {
+                    table.PrimaryKey("PK__Tramites__DC2729AE6A30BD91", x => x.id_tramite);
+                    table.ForeignKey(
+                        name: "FK__Tramites__id_cat__44FF419A",
+                        column: x => x.id_categoria,
+                        principalTable: "Categorias_Tramites",
+                        principalColumn: "id_categoria");
+                });
+
+            migrationBuilder.CreateTable(
+                name: "Dias_Inhabiles",
+                columns: table => new
+                {
+                    id_dia_inhabil = table.Column<int>(type: "int", nullable: false)
+                        .Annotation("SqlServer:Identity", "1, 1"),
+                    id_sede = table.Column<int>(type: "int", nullable: true),
+                    fecha_bloqueada = table.Column<DateOnly>(type: "date", nullable: false),
+                    motivo = table.Column<string>(type: "varchar(100)", unicode: false, maxLength: 100, nullable: false)
+                },
+                constraints: table =>
+                {
+                    table.PrimaryKey("PK__Dias_Inh__2488E88C2B3103CD", x => x.id_dia_inhabil);
+                    table.ForeignKey(
+                        name: "FK__Dias_Inha__id_se__5441852A",
+                        column: x => x.id_sede,
+                        principalTable: "Sedes",
+                        principalColumn: "id_sede");
+                });
+
+            migrationBuilder.CreateTable(
+                name: "Horarios_Sede",
+                columns: table => new
+                {
+                    id_horario = table.Column<int>(type: "int", nullable: false)
+                        .Annotation("SqlServer:Identity", "1, 1"),
+                    id_sede = table.Column<int>(type: "int", nullable: false),
+                    dia_semana = table.Column<byte>(type: "tinyint", nullable: false),
+                    hora_apertura = table.Column<TimeOnly>(type: "time", nullable: false),
+                    hora_cierre = table.Column<TimeOnly>(type: "time", nullable: false)
+                },
+                constraints: table =>
+                {
+                    table.PrimaryKey("PK__Horarios__C5836D69FA1A6428", x => x.id_horario);
+                    table.ForeignKey(
+                        name: "FK__Horarios___id_se__5165187F",
+                        column: x => x.id_sede,
+                        principalTable: "Sedes",
+                        principalColumn: "id_sede");
+                });
+
+            migrationBuilder.CreateTable(
+                name: "Usuarios_Internos",
+                columns: table => new
+                {
+                    id_usuario = table.Column<int>(type: "int", nullable: false)
+                        .Annotation("SqlServer:Identity", "1, 1"),
+                    username = table.Column<string>(type: "varchar(50)", unicode: false, maxLength: 50, nullable: false),
+                    password_hash = table.Column<string>(type: "varchar(255)", unicode: false, maxLength: 255, nullable: false),
+                    nombre_completo = table.Column<string>(type: "varchar(100)", unicode: false, maxLength: 100, nullable: false),
+                    id_rol = table.Column<int>(type: "int", nullable: false),
+                    id_sede = table.Column<int>(type: "int", nullable: false),
+                    activo = table.Column<bool>(type: "bit", nullable: true, defaultValue: true),
+                    requiere_cambio_password = table.Column<bool>(type: "bit", nullable: true),
+                    IntentosFallidos = table.Column<int>(type: "int", nullable: false),
+                    BloqueadoHasta = table.Column<DateTime>(type: "datetime2", nullable: true)
+                },
+                constraints: table =>
+                {
+                    table.PrimaryKey("PK__Usuarios__4E3E04ADB8D06CD7", x => x.id_usuario);
+                    table.ForeignKey(
+                        name: "FK__Usuarios___id_ro__3E52440B",
+                        column: x => x.id_rol,
+                        principalTable: "Roles",
+                        principalColumn: "id_rol");
+                    table.ForeignKey(
+                        name: "FK__Usuarios___id_se__3F466844",
+                        column: x => x.id_sede,
+                        principalTable: "Sedes",
+                        principalColumn: "id_sede");
+                });
+
+            migrationBuilder.CreateTable(
+                name: "Citas",
+                columns: table => new
+                {
+                    id_cita = table.Column<string>(type: "varchar(20)", unicode: false, maxLength: 20, nullable: false),
+                    id_ciudadano = table.Column<int>(type: "int", nullable: false),
+                    id_tramite = table.Column<int>(type: "int", nullable: false),
+                    id_sede = table.Column<int>(type: "int", nullable: false),
+                    fecha_hora_inicio = table.Column<DateTime>(type: "datetime", nullable: false),
+                    fecha_hora_fin = table.Column<DateTime>(type: "datetime", nullable: false),
+                    estatus = table.Column<string>(type: "varchar(20)", unicode: false, maxLength: 20, nullable: false),
+                    RowVersion = table.Column<byte[]>(type: "rowversion", rowVersion: true, nullable: false),
+                    ip_origen = table.Column<string>(type: "nvarchar(max)", nullable: true),
+                    navegador = table.Column<string>(type: "nvarchar(max)", nullable: true),
+                    sistema_operativo = table.Column<string>(type: "nvarchar(max)", nullable: true)
+                },
+                constraints: table =>
+                {
+                    table.PrimaryKey("PK__Citas__6AEC3C092F0BF515", x => x.id_cita);
+                    table.ForeignKey(
+                        name: "FK__Citas__id_ciudad__4CA06362",
+                        column: x => x.id_ciudadano,
+                        principalTable: "Ciudadanos",
+                        principalColumn: "id_ciudadano");
+                    table.ForeignKey(
+                        name: "FK__Citas__id_sede__4E88ABD4",
+                        column: x => x.id_sede,
+                        principalTable: "Sedes",
+                        principalColumn: "id_sede");
+                    table.ForeignKey(
+                        name: "FK__Citas__id_tramit__4D94879B",
+                        column: x => x.id_tramite,
+                        principalTable: "Tramites",
+                        principalColumn: "id_tramite");
+                });
+
+            migrationBuilder.CreateTable(
+                name: "Bitacora_Auditoria",
+                columns: table => new
+                {
+                    id_bitacora = table.Column<int>(type: "int", nullable: false)
+                        .Annotation("SqlServer:Identity", "1, 1"),
+                    id_usuario_interno = table.Column<int>(type: "int", nullable: false),
+                    tabla_afectada = table.Column<string>(type: "varchar(50)", unicode: false, maxLength: 50, nullable: false),
+                    accion_realizada = table.Column<string>(type: "varchar(20)", unicode: false, maxLength: 20, nullable: false),
+                    registro_id = table.Column<string>(type: "nvarchar(max)", nullable: false),
+                    valor_anterior = table.Column<string>(type: "text", nullable: true),
+                    valor_nuevo = table.Column<string>(type: "text", nullable: true),
+                    fecha_cambio = table.Column<DateTime>(type: "datetime", nullable: true, defaultValueSql: "(getdate())")
+                },
+                constraints: table =>
+                {
+                    table.PrimaryKey("PK__Bitacora__7E4268B0D2EB1BA4", x => x.id_bitacora);
+                    table.ForeignKey(
+                        name: "FK__Bitacora___id_us__59063A47",
+                        column: x => x.id_usuario_interno,
+                        principalTable: "Usuarios_Internos",
+                        principalColumn: "id_usuario");
+                });
+
+            migrationBuilder.CreateIndex(
+                name: "IX_Bitacora_Auditoria_id_usuario_interno",
+                table: "Bitacora_Auditoria",
+                column: "id_usuario_interno");
+
+            migrationBuilder.CreateIndex(
+                name: "IX_Citas_id_ciudadano",
+                table: "Citas",
+                column: "id_ciudadano");
+
+            migrationBuilder.CreateIndex(
+                name: "IX_Citas_id_sede",
+                table: "Citas",
+                column: "id_sede");
+
+            migrationBuilder.CreateIndex(
+                name: "IX_Citas_id_tramite",
+                table: "Citas",
+                column: "id_tramite");
+
+            migrationBuilder.CreateIndex(
+                name: "UQ__Ciudadan__2CDDD194822D2264",
+                table: "Ciudadanos",
+                column: "curp",
+                unique: true);
+
+            migrationBuilder.CreateIndex(
+                name: "IX_Dias_Inhabiles_id_sede",
+                table: "Dias_Inhabiles",
+                column: "id_sede");
+
+            migrationBuilder.CreateIndex(
+                name: "IX_Horarios_Sede_id_sede",
+                table: "Horarios_Sede",
+                column: "id_sede");
+
+            migrationBuilder.CreateIndex(
+                name: "IX_Tramites_id_categoria",
+                table: "Tramites",
+                column: "id_categoria");
+
+            migrationBuilder.CreateIndex(
+                name: "IX_Usuarios_Internos_id_rol",
+                table: "Usuarios_Internos",
+                column: "id_rol");
+
+            migrationBuilder.CreateIndex(
+                name: "IX_Usuarios_Internos_id_sede",
+                table: "Usuarios_Internos",
+                column: "id_sede");
+
+            migrationBuilder.CreateIndex(
+                name: "UQ__Usuarios__F3DBC572531AC299",
+                table: "Usuarios_Internos",
+                column: "username",
+                unique: true);
+        }
+
+        /// <inheritdoc />
+        protected override void Down(MigrationBuilder migrationBuilder)
+        {
+            migrationBuilder.DropTable(
+                name: "Avisos_Globales");
+
+            migrationBuilder.DropTable(
+                name: "Bitacora_Auditoria");
+
+            migrationBuilder.DropTable(
+                name: "Citas");
+
+            migrationBuilder.DropTable(
+                name: "Configuracion_Agenda");
+
+            migrationBuilder.DropTable(
+                name: "Dias_Inhabiles");
+
+            migrationBuilder.DropTable(
+                name: "Horarios_Sede");
+
+            migrationBuilder.DropTable(
+                name: "Registro_Accesos");
+
+            migrationBuilder.DropTable(
+                name: "Usuarios_Internos");
+
+            migrationBuilder.DropTable(
+                name: "Ciudadanos");
+
+            migrationBuilder.DropTable(
+                name: "Tramites");
+
+            migrationBuilder.DropTable(
+                name: "Roles");
+
+            migrationBuilder.DropTable(
+                name: "Sedes");
+
+            migrationBuilder.DropTable(
+                name: "Categorias_Tramites");
+        }
+    }
+}
+</file>
+
+<file path="Migrations/20260923164315_InicialCloud.Designer.cs">
+// <auto-generated />
+using System;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
+using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
+using RegistroCivilAPI.Models;
+
+#nullable disable
+
+namespace RegistroCivilAPI.Migrations
+{
+    [DbContext(typeof(RegistroCivilCitasContext))]
+    [Migration("20260923164315_InicialCloud")]
+    partial class InicialCloud
+    {
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
+        {
+#pragma warning disable 612, 618
+            modelBuilder
+                .HasAnnotation("ProductVersion", "10.0.9")
+                .HasAnnotation("Relational:MaxIdentifierLength", 128);
+
+            SqlServerModelBuilderExtensions.UseIdentityColumns(modelBuilder);
+
+            modelBuilder.Entity("RegistroCivilAPI.Models.AvisoGlobal", b =>
+                {
+                    b.Property<int>("IdAviso")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int")
+                        .HasColumnName("id_aviso");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("IdAviso"));
+
+                    b.Property<bool?>("Activo")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bit")
+                        .HasDefaultValue(true)
+                        .HasColumnName("activo");
+
+                    b.Property<string>("ImagenUrl")
+                        .HasMaxLength(500)
+                        .IsUnicode(false)
+                        .HasColumnType("varchar(500)")
+                        .HasColumnName("imagen_url");
+
+                    b.Property<string>("Mensaje")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("mensaje");
+
+                    b.Property<string>("Titulo")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .IsUnicode(false)
+                        .HasColumnType("varchar(100)")
+                        .HasColumnName("titulo");
+
+                    b.HasKey("IdAviso")
+                        .HasName("PK_AvisosGlobales");
+
+                    b.ToTable("Avisos_Globales", (string)null);
+                });
+
+            modelBuilder.Entity("RegistroCivilAPI.Models.BitacoraAuditorium", b =>
+                {
+                    b.Property<int>("IdBitacora")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int")
+                        .HasColumnName("id_bitacora");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("IdBitacora"));
+
+                    b.Property<string>("AccionRealizada")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .IsUnicode(false)
+                        .HasColumnType("varchar(20)")
+                        .HasColumnName("accion_realizada");
+
+                    b.Property<DateTime?>("FechaCambio")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("datetime")
+                        .HasColumnName("fecha_cambio")
+                        .HasDefaultValueSql("(getdate())");
+
+                    b.Property<int>("IdUsuarioInterno")
+                        .HasColumnType("int")
+                        .HasColumnName("id_usuario_interno");
+
+                    b.Property<string>("RegistroId")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)")
+                        .HasColumnName("registro_id");
+
+                    b.Property<string>("TablaAfectada")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .IsUnicode(false)
+                        .HasColumnType("varchar(50)")
+                        .HasColumnName("tabla_afectada");
+
+                    b.Property<string>("ValorAnterior")
+                        .HasColumnType("text")
+                        .HasColumnName("valor_anterior");
+
+                    b.Property<string>("ValorNuevo")
+                        .HasColumnType("text")
+                        .HasColumnName("valor_nuevo");
+
+                    b.HasKey("IdBitacora")
+                        .HasName("PK__Bitacora__7E4268B0D2EB1BA4");
+
+                    b.HasIndex("IdUsuarioInterno");
+
+                    b.ToTable("Bitacora_Auditoria", (string)null);
+                });
+
+            modelBuilder.Entity("RegistroCivilAPI.Models.CategoriasTramite", b =>
+                {
+                    b.Property<int>("IdCategoria")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int")
+                        .HasColumnName("id_categoria");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("IdCategoria"));
+
+                    b.Property<bool?>("Activa")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bit")
+                        .HasDefaultValue(true)
+                        .HasColumnName("activa");
+
+                    b.Property<string>("Descripcion")
+                        .HasColumnType("varchar(255)")
+                        .HasColumnName("descripcion");
+
+                    b.Property<string>("NombreCategoria")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .IsUnicode(false)
+                        .HasColumnType("varchar(100)")
+                        .HasColumnName("nombre_categoria");
+
+                    b.HasKey("IdCategoria")
+                        .HasName("PK__Categori__CD54BC5ADDE5FCC4");
+
+                    b.ToTable("Categorias_Tramites", (string)null);
+                });
+
+            modelBuilder.Entity("RegistroCivilAPI.Models.Cita", b =>
+                {
+                    b.Property<string>("IdCita")
+                        .HasMaxLength(20)
+                        .IsUnicode(false)
+                        .HasColumnType("varchar(20)")
+                        .HasColumnName("id_cita");
+
+                    b.Property<string>("Estatus")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .IsUnicode(false)
+                        .HasColumnType("varchar(20)")
+                        .HasColumnName("estatus");
+
+                    b.Property<DateTime>("FechaHoraFin")
+                        .HasColumnType("datetime")
+                        .HasColumnName("fecha_hora_fin");
+
+                    b.Property<DateTime>("FechaHoraInicio")
+                        .HasColumnType("datetime")
+                        .HasColumnName("fecha_hora_inicio");
+
+                    b.Property<int>("IdCiudadano")
+                        .HasColumnType("int")
+                        .HasColumnName("id_ciudadano");
+
+                    b.Property<int>("IdSede")
+                        .HasColumnType("int")
+                        .HasColumnName("id_sede");
+
+                    b.Property<int>("IdTramite")
+                        .HasColumnType("int")
+                        .HasColumnName("id_tramite");
+
+                    b.Property<string>("IpOrigen")
+                        .HasColumnType("nvarchar(max)")
+                        .HasColumnName("ip_origen");
+
+                    b.Property<string>("Navegador")
+                        .HasColumnType("nvarchar(max)")
+                        .HasColumnName("navegador");
+
+                    b.Property<byte[]>("RowVersion")
+                        .IsConcurrencyToken()
+                        .IsRequired()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("rowversion");
+
+                    b.Property<string>("SistemaOperativo")
+                        .HasColumnType("nvarchar(max)")
+                        .HasColumnName("sistema_operativo");
+
+                    b.HasKey("IdCita")
+                        .HasName("PK__Citas__6AEC3C092F0BF515");
+
+                    b.HasIndex("IdCiudadano");
+
+                    b.HasIndex("IdSede");
+
+                    b.HasIndex("IdTramite");
+
+                    b.ToTable("Citas");
+                });
+
+            modelBuilder.Entity("RegistroCivilAPI.Models.Ciudadano", b =>
+                {
+                    b.Property<int>("IdCiudadano")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int")
+                        .HasColumnName("id_ciudadano");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("IdCiudadano"));
+
+                    b.Property<string>("Correo")
+                        .HasMaxLength(100)
+                        .IsUnicode(false)
+                        .HasColumnType("varchar(100)")
+                        .HasColumnName("correo");
+
+                    b.Property<string>("Curp")
+                        .IsRequired()
+                        .HasMaxLength(18)
+                        .IsUnicode(false)
+                        .HasColumnType("varchar(18)")
+                        .HasColumnName("curp");
+
+                    b.Property<string>("Nombre")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .IsUnicode(false)
+                        .HasColumnType("varchar(50)")
+                        .HasColumnName("nombre");
+
+                    b.Property<string>("OrigenRegistro")
+                        .HasMaxLength(150)
+                        .IsUnicode(false)
+                        .HasColumnType("varchar(150)")
+                        .HasColumnName("origen_registro");
+
+                    b.Property<string>("PrimerApellido")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .IsUnicode(false)
+                        .HasColumnType("varchar(50)")
+                        .HasColumnName("primer_apellido");
+
+                    b.Property<string>("SegundoApellido")
+                        .HasMaxLength(50)
+                        .IsUnicode(false)
+                        .HasColumnType("varchar(50)")
+                        .HasColumnName("segundo_apellido");
+
+                    b.Property<string>("Telefono")
+                        .HasMaxLength(15)
+                        .IsUnicode(false)
+                        .HasColumnType("varchar(15)")
+                        .HasColumnName("telefono");
+
+                    b.HasKey("IdCiudadano")
+                        .HasName("PK__Ciudadan__676FF54B1A98BECA");
+
+                    b.HasIndex(new[] { "Curp" }, "UQ__Ciudadan__2CDDD194822D2264")
+                        .IsUnique();
+
+                    b.ToTable("Ciudadanos");
+                });
+
+            modelBuilder.Entity("RegistroCivilAPI.Models.ConfiguracionAgenda", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int")
+                        .HasColumnName("id");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<DateTime>("FechaFin")
+                        .HasColumnType("date")
+                        .HasColumnName("fecha_fin");
+
+                    b.Property<DateTime>("FechaInicio")
+                        .HasColumnType("date")
+                        .HasColumnName("fecha_inicio");
+
+                    b.HasKey("Id");
+
+                    b.ToTable("Configuracion_Agenda", (string)null);
+                });
+
+            modelBuilder.Entity("RegistroCivilAPI.Models.DiasInhabile", b =>
+                {
+                    b.Property<int>("IdDiaInhabil")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int")
+                        .HasColumnName("id_dia_inhabil");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("IdDiaInhabil"));
+
+                    b.Property<DateOnly>("FechaBloqueada")
+                        .HasColumnType("date")
+                        .HasColumnName("fecha_bloqueada");
+
+                    b.Property<int?>("IdSede")
+                        .HasColumnType("int")
+                        .HasColumnName("id_sede");
+
+                    b.Property<string>("Motivo")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .IsUnicode(false)
+                        .HasColumnType("varchar(100)")
+                        .HasColumnName("motivo");
+
+                    b.HasKey("IdDiaInhabil")
+                        .HasName("PK__Dias_Inh__2488E88C2B3103CD");
+
+                    b.HasIndex("IdSede");
+
+                    b.ToTable("Dias_Inhabiles", (string)null);
+                });
+
+            modelBuilder.Entity("RegistroCivilAPI.Models.HorariosSede", b =>
+                {
+                    b.Property<int>("IdHorario")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int")
+                        .HasColumnName("id_horario");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("IdHorario"));
+
+                    b.Property<byte>("DiaSemana")
+                        .HasColumnType("tinyint")
+                        .HasColumnName("dia_semana");
+
+                    b.Property<TimeOnly>("HoraApertura")
+                        .HasColumnType("time")
+                        .HasColumnName("hora_apertura");
+
+                    b.Property<TimeOnly>("HoraCierre")
+                        .HasColumnType("time")
+                        .HasColumnName("hora_cierre");
+
+                    b.Property<int>("IdSede")
+                        .HasColumnType("int")
+                        .HasColumnName("id_sede");
+
+                    b.HasKey("IdHorario")
+                        .HasName("PK__Horarios__C5836D69FA1A6428");
+
+                    b.HasIndex("IdSede");
+
+                    b.ToTable("Horarios_Sede", (string)null);
+                });
+
+            modelBuilder.Entity("RegistroCivilAPI.Models.RegistroAcceso", b =>
+                {
+                    b.Property<int>("IdAcceso")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int")
+                        .HasColumnName("id_acceso");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("IdAcceso"));
+
+                    b.Property<DateTime?>("FechaLogin")
+                        .HasColumnType("datetime")
+                        .HasColumnName("fecha_login");
+
+                    b.Property<DateTime?>("FechaLogout")
+                        .HasColumnType("datetime")
+                        .HasColumnName("fecha_logout");
+
+                    b.Property<string>("Username")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .IsUnicode(false)
+                        .HasColumnType("varchar(50)")
+                        .HasColumnName("username");
+
+                    b.HasKey("IdAcceso");
+
+                    b.ToTable("Registro_Accesos", (string)null);
+                });
+
+            modelBuilder.Entity("RegistroCivilAPI.Models.Role", b =>
+                {
+                    b.Property<int>("IdRol")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int")
+                        .HasColumnName("id_rol");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("IdRol"));
+
+                    b.Property<string>("NombreRol")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .IsUnicode(false)
+                        .HasColumnType("varchar(50)")
+                        .HasColumnName("nombre_rol");
+
+                    b.HasKey("IdRol")
+                        .HasName("PK__Roles__6ABCB5E0D56A4E16");
+
+                    b.ToTable("Roles");
+                });
+
+            modelBuilder.Entity("RegistroCivilAPI.Models.Sede", b =>
+                {
+                    b.Property<int>("IdSede")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int")
+                        .HasColumnName("id_sede");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("IdSede"));
+
+                    b.Property<bool?>("Activa")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bit")
+                        .HasDefaultValue(true)
+                        .HasColumnName("activa");
+
+                    b.Property<string>("Direccion")
+                        .HasMaxLength(255)
+                        .IsUnicode(false)
+                        .HasColumnType("varchar(255)")
+                        .HasColumnName("direccion");
+
+                    b.Property<string>("Municipio")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .IsUnicode(false)
+                        .HasColumnType("varchar(50)")
+                        .HasColumnName("municipio");
+
+                    b.Property<string>("Nombre")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .IsUnicode(false)
+                        .HasColumnType("varchar(100)")
+                        .HasColumnName("nombre");
+
+                    b.HasKey("IdSede")
+                        .HasName("PK__Sedes__D693504B010B634E");
+
+                    b.ToTable("Sedes");
+                });
+
+            modelBuilder.Entity("RegistroCivilAPI.Models.Tramite", b =>
+                {
+                    b.Property<int>("IdTramite")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int")
+                        .HasColumnName("id_tramite");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("IdTramite"));
+
+                    b.Property<bool?>("Activo")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bit")
+                        .HasDefaultValue(true)
+                        .HasColumnName("activo");
+
+                    b.Property<decimal>("Costo")
+                        .HasColumnType("decimal(10, 2)")
+                        .HasColumnName("costo");
+
+                    b.Property<string>("Descripcion")
+                        .HasColumnType("text")
+                        .HasColumnName("descripcion");
+
+                    b.Property<int>("DuracionMinutos")
+                        .HasColumnType("int")
+                        .HasColumnName("duracion_minutos");
+
+                    b.Property<DateTime?>("FechaFinPermitida")
+                        .HasColumnType("date")
+                        .HasColumnName("fecha_fin_permitida");
+
+                    b.Property<DateTime?>("FechaInicioPermitida")
+                        .HasColumnType("date")
+                        .HasColumnName("fecha_inicio_permitida");
+
+                    b.Property<int>("IdCategoria")
+                        .HasColumnType("int")
+                        .HasColumnName("id_categoria");
+
+                    b.Property<int>("LimiteDiarioSede")
+                        .HasColumnType("int")
+                        .HasColumnName("limite_diario_sede");
+
+                    b.Property<string>("NombreTramite")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .IsUnicode(false)
+                        .HasColumnType("varchar(100)")
+                        .HasColumnName("nombre_tramite");
+
+                    b.Property<string>("Requisitos")
+                        .HasColumnType("varchar(500)")
+                        .HasColumnName("requisitos");
+
+                    b.HasKey("IdTramite")
+                        .HasName("PK__Tramites__DC2729AE6A30BD91");
+
+                    b.HasIndex("IdCategoria");
+
+                    b.ToTable("Tramites");
+                });
+
+            modelBuilder.Entity("RegistroCivilAPI.Models.UsuariosInterno", b =>
+                {
+                    b.Property<int>("IdUsuario")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int")
+                        .HasColumnName("id_usuario");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("IdUsuario"));
+
+                    b.Property<bool?>("Activo")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bit")
+                        .HasDefaultValue(true)
+                        .HasColumnName("activo");
+
+                    b.Property<DateTime?>("BloqueadoHasta")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int>("IdRol")
+                        .HasColumnType("int")
+                        .HasColumnName("id_rol");
+
+                    b.Property<int>("IdSede")
+                        .HasColumnType("int")
+                        .HasColumnName("id_sede");
+
+                    b.Property<int>("IntentosFallidos")
+                        .HasColumnType("int");
+
+                    b.Property<string>("NombreCompleto")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .IsUnicode(false)
+                        .HasColumnType("varchar(100)")
+                        .HasColumnName("nombre_completo");
+
+                    b.Property<string>("PasswordHash")
+                        .IsRequired()
+                        .HasMaxLength(255)
+                        .IsUnicode(false)
+                        .HasColumnType("varchar(255)")
+                        .HasColumnName("password_hash");
+
+                    b.Property<bool?>("RequiereCambioPassword")
+                        .HasColumnType("bit")
+                        .HasColumnName("requiere_cambio_password");
+
+                    b.Property<string>("Username")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .IsUnicode(false)
+                        .HasColumnType("varchar(50)")
+                        .HasColumnName("username");
+
+                    b.HasKey("IdUsuario")
+                        .HasName("PK__Usuarios__4E3E04ADB8D06CD7");
+
+                    b.HasIndex("IdRol");
+
+                    b.HasIndex("IdSede");
+
+                    b.HasIndex(new[] { "Username" }, "UQ__Usuarios__F3DBC572531AC299")
+                        .IsUnique();
+
+                    b.ToTable("Usuarios_Internos", (string)null);
+                });
+
+            modelBuilder.Entity("RegistroCivilAPI.Models.BitacoraAuditorium", b =>
+                {
+                    b.HasOne("RegistroCivilAPI.Models.UsuariosInterno", "IdUsuarioInternoNavigation")
+                        .WithMany("BitacoraAuditoria")
+                        .HasForeignKey("IdUsuarioInterno")
+                        .IsRequired()
+                        .HasConstraintName("FK__Bitacora___id_us__59063A47");
+
+                    b.Navigation("IdUsuarioInternoNavigation");
+                });
+
+            modelBuilder.Entity("RegistroCivilAPI.Models.Cita", b =>
+                {
+                    b.HasOne("RegistroCivilAPI.Models.Ciudadano", "IdCiudadanoNavigation")
+                        .WithMany("Citas")
+                        .HasForeignKey("IdCiudadano")
+                        .IsRequired()
+                        .HasConstraintName("FK__Citas__id_ciudad__4CA06362");
+
+                    b.HasOne("RegistroCivilAPI.Models.Sede", "IdSedeNavigation")
+                        .WithMany("Citas")
+                        .HasForeignKey("IdSede")
+                        .IsRequired()
+                        .HasConstraintName("FK__Citas__id_sede__4E88ABD4");
+
+                    b.HasOne("RegistroCivilAPI.Models.Tramite", "IdTramiteNavigation")
+                        .WithMany("Citas")
+                        .HasForeignKey("IdTramite")
+                        .IsRequired()
+                        .HasConstraintName("FK__Citas__id_tramit__4D94879B");
+
+                    b.Navigation("IdCiudadanoNavigation");
+
+                    b.Navigation("IdSedeNavigation");
+
+                    b.Navigation("IdTramiteNavigation");
+                });
+
+            modelBuilder.Entity("RegistroCivilAPI.Models.DiasInhabile", b =>
+                {
+                    b.HasOne("RegistroCivilAPI.Models.Sede", "IdSedeNavigation")
+                        .WithMany("DiasInhabiles")
+                        .HasForeignKey("IdSede")
+                        .HasConstraintName("FK__Dias_Inha__id_se__5441852A");
+
+                    b.Navigation("IdSedeNavigation");
+                });
+
+            modelBuilder.Entity("RegistroCivilAPI.Models.HorariosSede", b =>
+                {
+                    b.HasOne("RegistroCivilAPI.Models.Sede", "IdSedeNavigation")
+                        .WithMany("HorariosSedes")
+                        .HasForeignKey("IdSede")
+                        .IsRequired()
+                        .HasConstraintName("FK__Horarios___id_se__5165187F");
+
+                    b.Navigation("IdSedeNavigation");
+                });
+
+            modelBuilder.Entity("RegistroCivilAPI.Models.Tramite", b =>
+                {
+                    b.HasOne("RegistroCivilAPI.Models.CategoriasTramite", "IdCategoriaNavigation")
+                        .WithMany("Tramites")
+                        .HasForeignKey("IdCategoria")
+                        .IsRequired()
+                        .HasConstraintName("FK__Tramites__id_cat__44FF419A");
+
+                    b.Navigation("IdCategoriaNavigation");
+                });
+
+            modelBuilder.Entity("RegistroCivilAPI.Models.UsuariosInterno", b =>
+                {
+                    b.HasOne("RegistroCivilAPI.Models.Role", "IdRolNavigation")
+                        .WithMany("UsuariosInternos")
+                        .HasForeignKey("IdRol")
+                        .IsRequired()
+                        .HasConstraintName("FK__Usuarios___id_ro__3E52440B");
+
+                    b.HasOne("RegistroCivilAPI.Models.Sede", "IdSedeNavigation")
+                        .WithMany("UsuariosInternos")
+                        .HasForeignKey("IdSede")
+                        .IsRequired()
+                        .HasConstraintName("FK__Usuarios___id_se__3F466844");
+
+                    b.Navigation("IdRolNavigation");
+
+                    b.Navigation("IdSedeNavigation");
+                });
+
+            modelBuilder.Entity("RegistroCivilAPI.Models.CategoriasTramite", b =>
+                {
+                    b.Navigation("Tramites");
+                });
+
+            modelBuilder.Entity("RegistroCivilAPI.Models.Ciudadano", b =>
+                {
+                    b.Navigation("Citas");
+                });
+
+            modelBuilder.Entity("RegistroCivilAPI.Models.Role", b =>
+                {
+                    b.Navigation("UsuariosInternos");
+                });
+
+            modelBuilder.Entity("RegistroCivilAPI.Models.Sede", b =>
+                {
+                    b.Navigation("Citas");
+
+                    b.Navigation("DiasInhabiles");
+
+                    b.Navigation("HorariosSedes");
+
+                    b.Navigation("UsuariosInternos");
+                });
+
+            modelBuilder.Entity("RegistroCivilAPI.Models.Tramite", b =>
+                {
+                    b.Navigation("Citas");
+                });
+
+            modelBuilder.Entity("RegistroCivilAPI.Models.UsuariosInterno", b =>
+                {
+                    b.Navigation("BitacoraAuditoria");
+                });
+#pragma warning restore 612, 618
+        }
+    }
+}
+</file>
+
+<file path="Migrations/RegistroCivilCitasContextModelSnapshot.cs">
+// <auto-generated />
+using System;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
+using RegistroCivilAPI.Models;
+
+#nullable disable
+
+namespace RegistroCivilAPI.Migrations
+{
+    [DbContext(typeof(RegistroCivilCitasContext))]
+    partial class RegistroCivilCitasContextModelSnapshot : ModelSnapshot
+    {
+        protected override void BuildModel(ModelBuilder modelBuilder)
+        {
+#pragma warning disable 612, 618
+            modelBuilder
+                .HasAnnotation("ProductVersion", "10.0.9")
+                .HasAnnotation("Relational:MaxIdentifierLength", 128);
+
+            SqlServerModelBuilderExtensions.UseIdentityColumns(modelBuilder);
+
+            modelBuilder.Entity("RegistroCivilAPI.Models.AvisoGlobal", b =>
+                {
+                    b.Property<int>("IdAviso")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int")
+                        .HasColumnName("id_aviso");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("IdAviso"));
+
+                    b.Property<bool?>("Activo")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bit")
+                        .HasDefaultValue(true)
+                        .HasColumnName("activo");
+
+                    b.Property<string>("ImagenUrl")
+                        .HasMaxLength(500)
+                        .IsUnicode(false)
+                        .HasColumnType("varchar(500)")
+                        .HasColumnName("imagen_url");
+
+                    b.Property<string>("Mensaje")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("mensaje");
+
+                    b.Property<string>("Titulo")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .IsUnicode(false)
+                        .HasColumnType("varchar(100)")
+                        .HasColumnName("titulo");
+
+                    b.HasKey("IdAviso")
+                        .HasName("PK_AvisosGlobales");
+
+                    b.ToTable("Avisos_Globales", (string)null);
+                });
+
+            modelBuilder.Entity("RegistroCivilAPI.Models.BitacoraAuditorium", b =>
+                {
+                    b.Property<int>("IdBitacora")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int")
+                        .HasColumnName("id_bitacora");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("IdBitacora"));
+
+                    b.Property<string>("AccionRealizada")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .IsUnicode(false)
+                        .HasColumnType("varchar(20)")
+                        .HasColumnName("accion_realizada");
+
+                    b.Property<DateTime?>("FechaCambio")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("datetime")
+                        .HasColumnName("fecha_cambio")
+                        .HasDefaultValueSql("(getdate())");
+
+                    b.Property<int>("IdUsuarioInterno")
+                        .HasColumnType("int")
+                        .HasColumnName("id_usuario_interno");
+
+                    b.Property<string>("RegistroId")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)")
+                        .HasColumnName("registro_id");
+
+                    b.Property<string>("TablaAfectada")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .IsUnicode(false)
+                        .HasColumnType("varchar(50)")
+                        .HasColumnName("tabla_afectada");
+
+                    b.Property<string>("ValorAnterior")
+                        .HasColumnType("text")
+                        .HasColumnName("valor_anterior");
+
+                    b.Property<string>("ValorNuevo")
+                        .HasColumnType("text")
+                        .HasColumnName("valor_nuevo");
+
+                    b.HasKey("IdBitacora")
+                        .HasName("PK__Bitacora__7E4268B0D2EB1BA4");
+
+                    b.HasIndex("IdUsuarioInterno");
+
+                    b.ToTable("Bitacora_Auditoria", (string)null);
+                });
+
+            modelBuilder.Entity("RegistroCivilAPI.Models.CategoriasTramite", b =>
+                {
+                    b.Property<int>("IdCategoria")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int")
+                        .HasColumnName("id_categoria");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("IdCategoria"));
+
+                    b.Property<bool?>("Activa")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bit")
+                        .HasDefaultValue(true)
+                        .HasColumnName("activa");
+
+                    b.Property<string>("Descripcion")
+                        .HasColumnType("varchar(255)")
+                        .HasColumnName("descripcion");
+
+                    b.Property<string>("NombreCategoria")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .IsUnicode(false)
+                        .HasColumnType("varchar(100)")
+                        .HasColumnName("nombre_categoria");
+
+                    b.HasKey("IdCategoria")
+                        .HasName("PK__Categori__CD54BC5ADDE5FCC4");
+
+                    b.ToTable("Categorias_Tramites", (string)null);
+                });
+
+            modelBuilder.Entity("RegistroCivilAPI.Models.Cita", b =>
+                {
+                    b.Property<string>("IdCita")
+                        .HasMaxLength(20)
+                        .IsUnicode(false)
+                        .HasColumnType("varchar(20)")
+                        .HasColumnName("id_cita");
+
+                    b.Property<string>("Estatus")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .IsUnicode(false)
+                        .HasColumnType("varchar(20)")
+                        .HasColumnName("estatus");
+
+                    b.Property<DateTime>("FechaHoraFin")
+                        .HasColumnType("datetime")
+                        .HasColumnName("fecha_hora_fin");
+
+                    b.Property<DateTime>("FechaHoraInicio")
+                        .HasColumnType("datetime")
+                        .HasColumnName("fecha_hora_inicio");
+
+                    b.Property<int>("IdCiudadano")
+                        .HasColumnType("int")
+                        .HasColumnName("id_ciudadano");
+
+                    b.Property<int>("IdSede")
+                        .HasColumnType("int")
+                        .HasColumnName("id_sede");
+
+                    b.Property<int>("IdTramite")
+                        .HasColumnType("int")
+                        .HasColumnName("id_tramite");
+
+                    b.Property<string>("IpOrigen")
+                        .HasColumnType("nvarchar(max)")
+                        .HasColumnName("ip_origen");
+
+                    b.Property<string>("Navegador")
+                        .HasColumnType("nvarchar(max)")
+                        .HasColumnName("navegador");
+
+                    b.Property<byte[]>("RowVersion")
+                        .IsConcurrencyToken()
+                        .IsRequired()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("rowversion");
+
+                    b.Property<string>("SistemaOperativo")
+                        .HasColumnType("nvarchar(max)")
+                        .HasColumnName("sistema_operativo");
+
+                    b.HasKey("IdCita")
+                        .HasName("PK__Citas__6AEC3C092F0BF515");
+
+                    b.HasIndex("IdCiudadano");
+
+                    b.HasIndex("IdSede");
+
+                    b.HasIndex("IdTramite");
+
+                    b.ToTable("Citas");
+                });
+
+            modelBuilder.Entity("RegistroCivilAPI.Models.Ciudadano", b =>
+                {
+                    b.Property<int>("IdCiudadano")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int")
+                        .HasColumnName("id_ciudadano");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("IdCiudadano"));
+
+                    b.Property<string>("Correo")
+                        .HasMaxLength(100)
+                        .IsUnicode(false)
+                        .HasColumnType("varchar(100)")
+                        .HasColumnName("correo");
+
+                    b.Property<string>("Curp")
+                        .IsRequired()
+                        .HasMaxLength(18)
+                        .IsUnicode(false)
+                        .HasColumnType("varchar(18)")
+                        .HasColumnName("curp");
+
+                    b.Property<string>("Nombre")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .IsUnicode(false)
+                        .HasColumnType("varchar(50)")
+                        .HasColumnName("nombre");
+
+                    b.Property<string>("OrigenRegistro")
+                        .HasMaxLength(150)
+                        .IsUnicode(false)
+                        .HasColumnType("varchar(150)")
+                        .HasColumnName("origen_registro");
+
+                    b.Property<string>("PrimerApellido")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .IsUnicode(false)
+                        .HasColumnType("varchar(50)")
+                        .HasColumnName("primer_apellido");
+
+                    b.Property<string>("SegundoApellido")
+                        .HasMaxLength(50)
+                        .IsUnicode(false)
+                        .HasColumnType("varchar(50)")
+                        .HasColumnName("segundo_apellido");
+
+                    b.Property<string>("Telefono")
+                        .HasMaxLength(15)
+                        .IsUnicode(false)
+                        .HasColumnType("varchar(15)")
+                        .HasColumnName("telefono");
+
+                    b.HasKey("IdCiudadano")
+                        .HasName("PK__Ciudadan__676FF54B1A98BECA");
+
+                    b.HasIndex(new[] { "Curp" }, "UQ__Ciudadan__2CDDD194822D2264")
+                        .IsUnique();
+
+                    b.ToTable("Ciudadanos");
+                });
+
+            modelBuilder.Entity("RegistroCivilAPI.Models.ConfiguracionAgenda", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int")
+                        .HasColumnName("id");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<DateTime>("FechaFin")
+                        .HasColumnType("date")
+                        .HasColumnName("fecha_fin");
+
+                    b.Property<DateTime>("FechaInicio")
+                        .HasColumnType("date")
+                        .HasColumnName("fecha_inicio");
+
+                    b.HasKey("Id");
+
+                    b.ToTable("Configuracion_Agenda", (string)null);
+                });
+
+            modelBuilder.Entity("RegistroCivilAPI.Models.DiasInhabile", b =>
+                {
+                    b.Property<int>("IdDiaInhabil")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int")
+                        .HasColumnName("id_dia_inhabil");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("IdDiaInhabil"));
+
+                    b.Property<DateOnly>("FechaBloqueada")
+                        .HasColumnType("date")
+                        .HasColumnName("fecha_bloqueada");
+
+                    b.Property<int?>("IdSede")
+                        .HasColumnType("int")
+                        .HasColumnName("id_sede");
+
+                    b.Property<string>("Motivo")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .IsUnicode(false)
+                        .HasColumnType("varchar(100)")
+                        .HasColumnName("motivo");
+
+                    b.HasKey("IdDiaInhabil")
+                        .HasName("PK__Dias_Inh__2488E88C2B3103CD");
+
+                    b.HasIndex("IdSede");
+
+                    b.ToTable("Dias_Inhabiles", (string)null);
+                });
+
+            modelBuilder.Entity("RegistroCivilAPI.Models.HorariosSede", b =>
+                {
+                    b.Property<int>("IdHorario")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int")
+                        .HasColumnName("id_horario");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("IdHorario"));
+
+                    b.Property<byte>("DiaSemana")
+                        .HasColumnType("tinyint")
+                        .HasColumnName("dia_semana");
+
+                    b.Property<TimeOnly>("HoraApertura")
+                        .HasColumnType("time")
+                        .HasColumnName("hora_apertura");
+
+                    b.Property<TimeOnly>("HoraCierre")
+                        .HasColumnType("time")
+                        .HasColumnName("hora_cierre");
+
+                    b.Property<int>("IdSede")
+                        .HasColumnType("int")
+                        .HasColumnName("id_sede");
+
+                    b.HasKey("IdHorario")
+                        .HasName("PK__Horarios__C5836D69FA1A6428");
+
+                    b.HasIndex("IdSede");
+
+                    b.ToTable("Horarios_Sede", (string)null);
+                });
+
+            modelBuilder.Entity("RegistroCivilAPI.Models.RegistroAcceso", b =>
+                {
+                    b.Property<int>("IdAcceso")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int")
+                        .HasColumnName("id_acceso");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("IdAcceso"));
+
+                    b.Property<DateTime?>("FechaLogin")
+                        .HasColumnType("datetime")
+                        .HasColumnName("fecha_login");
+
+                    b.Property<DateTime?>("FechaLogout")
+                        .HasColumnType("datetime")
+                        .HasColumnName("fecha_logout");
+
+                    b.Property<string>("Username")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .IsUnicode(false)
+                        .HasColumnType("varchar(50)")
+                        .HasColumnName("username");
+
+                    b.HasKey("IdAcceso");
+
+                    b.ToTable("Registro_Accesos", (string)null);
+                });
+
+            modelBuilder.Entity("RegistroCivilAPI.Models.Role", b =>
+                {
+                    b.Property<int>("IdRol")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int")
+                        .HasColumnName("id_rol");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("IdRol"));
+
+                    b.Property<string>("NombreRol")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .IsUnicode(false)
+                        .HasColumnType("varchar(50)")
+                        .HasColumnName("nombre_rol");
+
+                    b.HasKey("IdRol")
+                        .HasName("PK__Roles__6ABCB5E0D56A4E16");
+
+                    b.ToTable("Roles");
+                });
+
+            modelBuilder.Entity("RegistroCivilAPI.Models.Sede", b =>
+                {
+                    b.Property<int>("IdSede")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int")
+                        .HasColumnName("id_sede");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("IdSede"));
+
+                    b.Property<bool?>("Activa")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bit")
+                        .HasDefaultValue(true)
+                        .HasColumnName("activa");
+
+                    b.Property<string>("Direccion")
+                        .HasMaxLength(255)
+                        .IsUnicode(false)
+                        .HasColumnType("varchar(255)")
+                        .HasColumnName("direccion");
+
+                    b.Property<string>("Municipio")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .IsUnicode(false)
+                        .HasColumnType("varchar(50)")
+                        .HasColumnName("municipio");
+
+                    b.Property<string>("Nombre")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .IsUnicode(false)
+                        .HasColumnType("varchar(100)")
+                        .HasColumnName("nombre");
+
+                    b.HasKey("IdSede")
+                        .HasName("PK__Sedes__D693504B010B634E");
+
+                    b.ToTable("Sedes");
+                });
+
+            modelBuilder.Entity("RegistroCivilAPI.Models.Tramite", b =>
+                {
+                    b.Property<int>("IdTramite")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int")
+                        .HasColumnName("id_tramite");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("IdTramite"));
+
+                    b.Property<bool?>("Activo")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bit")
+                        .HasDefaultValue(true)
+                        .HasColumnName("activo");
+
+                    b.Property<decimal>("Costo")
+                        .HasColumnType("decimal(10, 2)")
+                        .HasColumnName("costo");
+
+                    b.Property<string>("Descripcion")
+                        .HasColumnType("text")
+                        .HasColumnName("descripcion");
+
+                    b.Property<int>("DuracionMinutos")
+                        .HasColumnType("int")
+                        .HasColumnName("duracion_minutos");
+
+                    b.Property<DateTime?>("FechaFinPermitida")
+                        .HasColumnType("date")
+                        .HasColumnName("fecha_fin_permitida");
+
+                    b.Property<DateTime?>("FechaInicioPermitida")
+                        .HasColumnType("date")
+                        .HasColumnName("fecha_inicio_permitida");
+
+                    b.Property<int>("IdCategoria")
+                        .HasColumnType("int")
+                        .HasColumnName("id_categoria");
+
+                    b.Property<int>("LimiteDiarioSede")
+                        .HasColumnType("int")
+                        .HasColumnName("limite_diario_sede");
+
+                    b.Property<string>("NombreTramite")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .IsUnicode(false)
+                        .HasColumnType("varchar(100)")
+                        .HasColumnName("nombre_tramite");
+
+                    b.Property<string>("Requisitos")
+                        .HasColumnType("varchar(500)")
+                        .HasColumnName("requisitos");
+
+                    b.HasKey("IdTramite")
+                        .HasName("PK__Tramites__DC2729AE6A30BD91");
+
+                    b.HasIndex("IdCategoria");
+
+                    b.ToTable("Tramites");
+                });
+
+            modelBuilder.Entity("RegistroCivilAPI.Models.UsuariosInterno", b =>
+                {
+                    b.Property<int>("IdUsuario")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int")
+                        .HasColumnName("id_usuario");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("IdUsuario"));
+
+                    b.Property<bool?>("Activo")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bit")
+                        .HasDefaultValue(true)
+                        .HasColumnName("activo");
+
+                    b.Property<DateTime?>("BloqueadoHasta")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int>("IdRol")
+                        .HasColumnType("int")
+                        .HasColumnName("id_rol");
+
+                    b.Property<int>("IdSede")
+                        .HasColumnType("int")
+                        .HasColumnName("id_sede");
+
+                    b.Property<int>("IntentosFallidos")
+                        .HasColumnType("int");
+
+                    b.Property<string>("NombreCompleto")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .IsUnicode(false)
+                        .HasColumnType("varchar(100)")
+                        .HasColumnName("nombre_completo");
+
+                    b.Property<string>("PasswordHash")
+                        .IsRequired()
+                        .HasMaxLength(255)
+                        .IsUnicode(false)
+                        .HasColumnType("varchar(255)")
+                        .HasColumnName("password_hash");
+
+                    b.Property<bool?>("RequiereCambioPassword")
+                        .HasColumnType("bit")
+                        .HasColumnName("requiere_cambio_password");
+
+                    b.Property<string>("Username")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .IsUnicode(false)
+                        .HasColumnType("varchar(50)")
+                        .HasColumnName("username");
+
+                    b.HasKey("IdUsuario")
+                        .HasName("PK__Usuarios__4E3E04ADB8D06CD7");
+
+                    b.HasIndex("IdRol");
+
+                    b.HasIndex("IdSede");
+
+                    b.HasIndex(new[] { "Username" }, "UQ__Usuarios__F3DBC572531AC299")
+                        .IsUnique();
+
+                    b.ToTable("Usuarios_Internos", (string)null);
+                });
+
+            modelBuilder.Entity("RegistroCivilAPI.Models.BitacoraAuditorium", b =>
+                {
+                    b.HasOne("RegistroCivilAPI.Models.UsuariosInterno", "IdUsuarioInternoNavigation")
+                        .WithMany("BitacoraAuditoria")
+                        .HasForeignKey("IdUsuarioInterno")
+                        .IsRequired()
+                        .HasConstraintName("FK__Bitacora___id_us__59063A47");
+
+                    b.Navigation("IdUsuarioInternoNavigation");
+                });
+
+            modelBuilder.Entity("RegistroCivilAPI.Models.Cita", b =>
+                {
+                    b.HasOne("RegistroCivilAPI.Models.Ciudadano", "IdCiudadanoNavigation")
+                        .WithMany("Citas")
+                        .HasForeignKey("IdCiudadano")
+                        .IsRequired()
+                        .HasConstraintName("FK__Citas__id_ciudad__4CA06362");
+
+                    b.HasOne("RegistroCivilAPI.Models.Sede", "IdSedeNavigation")
+                        .WithMany("Citas")
+                        .HasForeignKey("IdSede")
+                        .IsRequired()
+                        .HasConstraintName("FK__Citas__id_sede__4E88ABD4");
+
+                    b.HasOne("RegistroCivilAPI.Models.Tramite", "IdTramiteNavigation")
+                        .WithMany("Citas")
+                        .HasForeignKey("IdTramite")
+                        .IsRequired()
+                        .HasConstraintName("FK__Citas__id_tramit__4D94879B");
+
+                    b.Navigation("IdCiudadanoNavigation");
+
+                    b.Navigation("IdSedeNavigation");
+
+                    b.Navigation("IdTramiteNavigation");
+                });
+
+            modelBuilder.Entity("RegistroCivilAPI.Models.DiasInhabile", b =>
+                {
+                    b.HasOne("RegistroCivilAPI.Models.Sede", "IdSedeNavigation")
+                        .WithMany("DiasInhabiles")
+                        .HasForeignKey("IdSede")
+                        .HasConstraintName("FK__Dias_Inha__id_se__5441852A");
+
+                    b.Navigation("IdSedeNavigation");
+                });
+
+            modelBuilder.Entity("RegistroCivilAPI.Models.HorariosSede", b =>
+                {
+                    b.HasOne("RegistroCivilAPI.Models.Sede", "IdSedeNavigation")
+                        .WithMany("HorariosSedes")
+                        .HasForeignKey("IdSede")
+                        .IsRequired()
+                        .HasConstraintName("FK__Horarios___id_se__5165187F");
+
+                    b.Navigation("IdSedeNavigation");
+                });
+
+            modelBuilder.Entity("RegistroCivilAPI.Models.Tramite", b =>
+                {
+                    b.HasOne("RegistroCivilAPI.Models.CategoriasTramite", "IdCategoriaNavigation")
+                        .WithMany("Tramites")
+                        .HasForeignKey("IdCategoria")
+                        .IsRequired()
+                        .HasConstraintName("FK__Tramites__id_cat__44FF419A");
+
+                    b.Navigation("IdCategoriaNavigation");
+                });
+
+            modelBuilder.Entity("RegistroCivilAPI.Models.UsuariosInterno", b =>
+                {
+                    b.HasOne("RegistroCivilAPI.Models.Role", "IdRolNavigation")
+                        .WithMany("UsuariosInternos")
+                        .HasForeignKey("IdRol")
+                        .IsRequired()
+                        .HasConstraintName("FK__Usuarios___id_ro__3E52440B");
+
+                    b.HasOne("RegistroCivilAPI.Models.Sede", "IdSedeNavigation")
+                        .WithMany("UsuariosInternos")
+                        .HasForeignKey("IdSede")
+                        .IsRequired()
+                        .HasConstraintName("FK__Usuarios___id_se__3F466844");
+
+                    b.Navigation("IdRolNavigation");
+
+                    b.Navigation("IdSedeNavigation");
+                });
+
+            modelBuilder.Entity("RegistroCivilAPI.Models.CategoriasTramite", b =>
+                {
+                    b.Navigation("Tramites");
+                });
+
+            modelBuilder.Entity("RegistroCivilAPI.Models.Ciudadano", b =>
+                {
+                    b.Navigation("Citas");
+                });
+
+            modelBuilder.Entity("RegistroCivilAPI.Models.Role", b =>
+                {
+                    b.Navigation("UsuariosInternos");
+                });
+
+            modelBuilder.Entity("RegistroCivilAPI.Models.Sede", b =>
+                {
+                    b.Navigation("Citas");
+
+                    b.Navigation("DiasInhabiles");
+
+                    b.Navigation("HorariosSedes");
+
+                    b.Navigation("UsuariosInternos");
+                });
+
+            modelBuilder.Entity("RegistroCivilAPI.Models.Tramite", b =>
+                {
+                    b.Navigation("Citas");
+                });
+
+            modelBuilder.Entity("RegistroCivilAPI.Models.UsuariosInterno", b =>
+                {
+                    b.Navigation("BitacoraAuditoria");
+                });
+#pragma warning restore 612, 618
+        }
+    }
+}
+</file>
+
+<file path="Models/AvisoGlobal.cs">
+using System;
+
+namespace RegistroCivilAPI.Models;
+
+public partial class AvisoGlobal
+{
+    public int IdAviso { get; set; }
+    public string Titulo { get; set; } = null!;
+    public string Mensaje { get; set; } = null!;
+    public bool? Activo { get; set; }
+    public string? ImagenUrl { get; set; }
+}
+</file>
+
+<file path="Models/BitacoraAuditorium.cs">
+using System;
+using System.Collections.Generic;
+
+namespace RegistroCivilAPI.Models;
+
+public partial class BitacoraAuditorium
+{
+    public int IdBitacora { get; set; }
+    public int IdUsuarioInterno { get; set; }
+    public string TablaAfectada { get; set; } = null!;
+    public string AccionRealizada { get; set; } = null!;
+
+
+    public string RegistroId { get; set; } = null!;
+
+    public string? ValorAnterior { get; set; }
+    public string? ValorNuevo { get; set; }
+    public DateTime? FechaCambio { get; set; }
+
+    public virtual UsuariosInterno IdUsuarioInternoNavigation { get; set; } = null!;
+}
+</file>
+
+<file path="Models/CategoriasTramite.cs">
+using System;
+using System.Collections.Generic;
+
+namespace RegistroCivilAPI.Models;
+
+public partial class CategoriasTramite
+{
+    public int IdCategoria { get; set; }
+    public string NombreCategoria { get; set; } = null!;
+    public string? Descripcion { get; set; }
+    public bool? Activa { get; set; }
+
+    public virtual ICollection<Tramite> Tramites { get; set; } = new List<Tramite>();
+}
+</file>
+
+<file path="Models/Cita.cs">
+using System;
+using System.Collections.Generic;
+using System.ComponentModel.DataAnnotations;
+using System.ComponentModel.DataAnnotations.Schema; 
+
+namespace RegistroCivilAPI.Models;
+
+public partial class Cita
+{
+    public string IdCita { get; set; } = null!;
+    public int IdCiudadano { get; set; }
+    public int IdTramite { get; set; }
+    public int IdSede { get; set; }
+    public DateTime FechaHoraInicio { get; set; }
+    public DateTime FechaHoraFin { get; set; }
+    public string Estatus { get; set; } = null!;
+
+    public virtual Ciudadano IdCiudadanoNavigation { get; set; } = null!;
+    public virtual Sede IdSedeNavigation { get; set; } = null!;
+    public virtual Tramite IdTramiteNavigation { get; set; } = null!;
+    [Timestamp]
+    public byte[] RowVersion { get; set; }
+
+    [Column("ip_origen")]
+    public string? IpOrigen { get; set; }
+
+    [Column("navegador")]
+    public string? Navegador { get; set; }
+
+    [Column("sistema_operativo")]
+    public string? SistemaOperativo { get; set; }
+}
+</file>
+
+<file path="Models/Ciudadano.cs">
+using System;
+using System.Collections.Generic;
+
+namespace RegistroCivilAPI.Models;
+
+public partial class Ciudadano
+{
+    public int IdCiudadano { get; set; }
+    public string Curp { get; set; } = null!;
+    public string Nombre { get; set; } = null!;
+    public string PrimerApellido { get; set; } = null!;
+    public string? SegundoApellido { get; set; }
+    public string? Correo { get; set; }
+    public string? Telefono { get; set; }
+    public string? OrigenRegistro { get; set; }
+
+
+    public virtual ICollection<Cita> Citas { get; set; } = new List<Cita>();
+}
+</file>
+
+<file path="Models/ConfiguracionAgenda.cs">
+using System;
+
+namespace RegistroCivilAPI.Models
+{
+    public partial class ConfiguracionAgenda
+    {
+        public int Id { get; set; }
+        public DateTime FechaInicio { get; set; }
+        public DateTime FechaFin { get; set; }
+    }
+}
+</file>
+
+<file path="Models/DiasInhabile.cs">
+using System;
+using System.Collections.Generic;
+
+namespace RegistroCivilAPI.Models;
+
+public partial class DiasInhabile
+{
+    public int IdDiaInhabil { get; set; }
+
+    public int? IdSede { get; set; }
+
+    public DateOnly FechaBloqueada { get; set; }
+
+    public string Motivo { get; set; } = null!;
+
+    public virtual Sede? IdSedeNavigation { get; set; }
+}
+</file>
+
+<file path="Models/HorariosSede.cs">
+using System;
+using System.Collections.Generic;
+
+namespace RegistroCivilAPI.Models;
+
+public partial class HorariosSede
+{
+    public int IdHorario { get; set; }
+
+    public int IdSede { get; set; }
+
+    public byte DiaSemana { get; set; }
+
+    public TimeOnly HoraApertura { get; set; }
+
+    public TimeOnly HoraCierre { get; set; }
+
+    public virtual Sede IdSedeNavigation { get; set; } = null!;
+}
+</file>
+
+<file path="Models/RegistroAcceso.cs">
+using System;
+
+namespace RegistroCivilAPI.Models
+{
+    public partial class RegistroAcceso
+    {
+        public int IdAcceso { get; set; }
+        public string Username { get; set; } = null!;
+        public DateTime? FechaLogin { get; set; }
+        public DateTime? FechaLogout { get; set; }
+    }
+}
+</file>
+
+<file path="Models/RegistroCivilCitasContext.cs">
+using System;
+using System.Collections.Generic;
+using Microsoft.EntityFrameworkCore;
+
+namespace RegistroCivilAPI.Models;
+
+public partial class RegistroCivilCitasContext : DbContext
+{
+    public RegistroCivilCitasContext() { }
+
+    public RegistroCivilCitasContext(DbContextOptions<RegistroCivilCitasContext> options)
+        : base(options) { }
+
+    public virtual DbSet<BitacoraAuditorium> BitacoraAuditoria { get; set; }
+    public virtual DbSet<CategoriasTramite> CategoriasTramites { get; set; }
+    public virtual DbSet<Cita> Citas { get; set; }
+    public virtual DbSet<Ciudadano> Ciudadanos { get; set; }
+    public virtual DbSet<DiasInhabile> DiasInhabiles { get; set; }
+    public virtual DbSet<HorariosSede> HorariosSedes { get; set; }
+    public virtual DbSet<Role> Roles { get; set; }
+    public virtual DbSet<Sede> Sedes { get; set; }
+    public virtual DbSet<Tramite> Tramites { get; set; }
+    public virtual DbSet<UsuariosInterno> UsuariosInternos { get; set; }
+    public virtual DbSet<AvisoGlobal> AvisosGlobales { get; set; }
+    public virtual DbSet<RegistroAcceso> RegistroAccesos { get; set; }
+    public virtual DbSet<ConfiguracionAgenda> ConfiguracionAgendas { get; set; }
+
+    protected override void OnConfiguring(DbContextOptionsBuilder optionsBuilder)
+    {
+        if (!optionsBuilder.IsConfigured)
+        {
+            optionsBuilder.UseSqlServer("Server=localhost\\SQLEXPRESS;Database=RegistroCivil_Citas;Trusted_Connection=True;TrustServerCertificate=True;");
+        }
+    }
+    protected override void OnModelCreating(ModelBuilder modelBuilder)
+    {
+        modelBuilder.Entity<BitacoraAuditorium>(entity =>
+        {
+            entity.HasKey(e => e.IdBitacora).HasName("PK__Bitacora__7E4268B0D2EB1BA4");
+            entity.ToTable("Bitacora_Auditoria");
+            entity.Property(e => e.IdBitacora).HasColumnName("id_bitacora");
+            entity.Property(e => e.AccionRealizada).HasMaxLength(20).IsUnicode(false).HasColumnName("accion_realizada");
+            entity.Property(e => e.FechaCambio).HasDefaultValueSql("(getdate())").HasColumnType("datetime").HasColumnName("fecha_cambio");
+            entity.Property(e => e.IdUsuarioInterno).HasColumnName("id_usuario_interno");
+            entity.Property(e => e.RegistroId).HasColumnName("registro_id");
+            entity.Property(e => e.TablaAfectada).HasMaxLength(50).IsUnicode(false).HasColumnName("tabla_afectada");
+            entity.Property(e => e.ValorAnterior).HasColumnType("text").HasColumnName("valor_anterior");
+            entity.Property(e => e.ValorNuevo).HasColumnType("text").HasColumnName("valor_nuevo");
+            entity.HasOne(d => d.IdUsuarioInternoNavigation).WithMany(p => p.BitacoraAuditoria)
+                .HasForeignKey(d => d.IdUsuarioInterno)
+                .OnDelete(DeleteBehavior.ClientSetNull)
+                .HasConstraintName("FK__Bitacora___id_us__59063A47");
+        });
+
+        modelBuilder.Entity<CategoriasTramite>(entity =>
+        {
+            entity.HasKey(e => e.IdCategoria).HasName("PK__Categori__CD54BC5ADDE5FCC4");
+            entity.ToTable("Categorias_Tramites");
+            entity.Property(e => e.IdCategoria).HasColumnName("id_categoria");
+            entity.Property(e => e.NombreCategoria).HasMaxLength(100).IsUnicode(false).HasColumnName("nombre_categoria");
+            entity.Property(e => e.Descripcion).HasColumnType("varchar(255)").HasColumnName("descripcion");
+            entity.Property(e => e.Activa).HasDefaultValue(true).HasColumnName("activa");
+        });
+
+        modelBuilder.Entity<Cita>(entity =>
+        {
+            entity.HasKey(e => e.IdCita).HasName("PK__Citas__6AEC3C092F0BF515");
+            entity.Property(e => e.IdCita).HasMaxLength(20).IsUnicode(false).HasColumnName("id_cita");
+            entity.Property(e => e.Estatus).HasMaxLength(20).IsUnicode(false).HasColumnName("estatus");
+            entity.Property(e => e.FechaHoraFin).HasColumnType("datetime").HasColumnName("fecha_hora_fin");
+            entity.Property(e => e.FechaHoraInicio).HasColumnType("datetime").HasColumnName("fecha_hora_inicio");
+            entity.Property(e => e.IdCiudadano).HasColumnName("id_ciudadano");
+            entity.Property(e => e.IdSede).HasColumnName("id_sede");
+            entity.Property(e => e.IdTramite).HasColumnName("id_tramite");
+            entity.HasOne(d => d.IdCiudadanoNavigation).WithMany(p => p.Citas)
+                .HasForeignKey(d => d.IdCiudadano)
+                .OnDelete(DeleteBehavior.ClientSetNull)
+                .HasConstraintName("FK__Citas__id_ciudad__4CA06362");
+            entity.HasOne(d => d.IdSedeNavigation).WithMany(p => p.Citas)
+                .HasForeignKey(d => d.IdSede)
+                .OnDelete(DeleteBehavior.ClientSetNull)
+                .HasConstraintName("FK__Citas__id_sede__4E88ABD4");
+            entity.HasOne(d => d.IdTramiteNavigation).WithMany(p => p.Citas)
+                .HasForeignKey(d => d.IdTramite)
+                .OnDelete(DeleteBehavior.ClientSetNull)
+                .HasConstraintName("FK__Citas__id_tramit__4D94879B");
+        });
+
+        modelBuilder.Entity<Ciudadano>(entity =>
+        {
+            entity.HasKey(e => e.IdCiudadano).HasName("PK__Ciudadan__676FF54B1A98BECA");
+            entity.HasIndex(e => e.Curp, "UQ__Ciudadan__2CDDD194822D2264").IsUnique();
+            entity.Property(e => e.IdCiudadano).HasColumnName("id_ciudadano");
+            entity.Property(e => e.Correo).HasMaxLength(100).IsUnicode(false).HasColumnName("correo");
+            entity.Property(e => e.Curp).HasMaxLength(18).IsUnicode(false).HasColumnName("curp");
+            entity.Property(e => e.Nombre).HasMaxLength(50).IsUnicode(false).HasColumnName("nombre");
+            entity.Property(e => e.OrigenRegistro).HasMaxLength(150).IsUnicode(false).HasColumnName("origen_registro");
+            entity.Property(e => e.PrimerApellido).HasMaxLength(50).IsUnicode(false).HasColumnName("primer_apellido");
+            entity.Property(e => e.SegundoApellido).HasMaxLength(50).IsUnicode(false).HasColumnName("segundo_apellido");
+            entity.Property(e => e.Telefono).HasMaxLength(15).IsUnicode(false).HasColumnName("telefono");
+        });
+
+        modelBuilder.Entity<DiasInhabile>(entity =>
+        {
+            entity.HasKey(e => e.IdDiaInhabil).HasName("PK__Dias_Inh__2488E88C2B3103CD");
+            entity.ToTable("Dias_Inhabiles");
+            entity.Property(e => e.IdDiaInhabil).HasColumnName("id_dia_inhabil");
+            entity.Property(e => e.FechaBloqueada).HasColumnName("fecha_bloqueada");
+            entity.Property(e => e.IdSede).HasColumnName("id_sede");
+            entity.Property(e => e.Motivo).HasMaxLength(100).IsUnicode(false).HasColumnName("motivo");
+            entity.HasOne(d => d.IdSedeNavigation).WithMany(p => p.DiasInhabiles)
+                .HasForeignKey(d => d.IdSede)
+                .HasConstraintName("FK__Dias_Inha__id_se__5441852A");
+        });
+
+        modelBuilder.Entity<HorariosSede>(entity =>
+        {
+            entity.HasKey(e => e.IdHorario).HasName("PK__Horarios__C5836D69FA1A6428");
+            entity.ToTable("Horarios_Sede");
+            entity.Property(e => e.IdHorario).HasColumnName("id_horario");
+            entity.Property(e => e.DiaSemana).HasColumnName("dia_semana");
+            entity.Property(e => e.HoraApertura).HasColumnName("hora_apertura");
+            entity.Property(e => e.HoraCierre).HasColumnName("hora_cierre");
+            entity.Property(e => e.IdSede).HasColumnName("id_sede");
+            entity.HasOne(d => d.IdSedeNavigation).WithMany(p => p.HorariosSedes)
+                .HasForeignKey(d => d.IdSede)
+                .OnDelete(DeleteBehavior.ClientSetNull)
+                .HasConstraintName("FK__Horarios___id_se__5165187F");
+        });
+
+        modelBuilder.Entity<Role>(entity =>
+        {
+            entity.HasKey(e => e.IdRol).HasName("PK__Roles__6ABCB5E0D56A4E16");
+            entity.Property(e => e.IdRol).HasColumnName("id_rol");
+            entity.Property(e => e.NombreRol).HasMaxLength(50).IsUnicode(false).HasColumnName("nombre_rol");
+        });
+
+        modelBuilder.Entity<Sede>(entity =>
+        {
+            entity.HasKey(e => e.IdSede).HasName("PK__Sedes__D693504B010B634E");
+            entity.Property(e => e.IdSede).HasColumnName("id_sede");
+            entity.Property(e => e.Activa).HasDefaultValue(true).HasColumnName("activa");
+            entity.Property(e => e.Direccion).HasMaxLength(255).IsUnicode(false).HasColumnName("direccion");
+            entity.Property(e => e.Municipio).HasMaxLength(50).IsUnicode(false).HasColumnName("municipio");
+            entity.Property(e => e.Nombre).HasMaxLength(100).IsUnicode(false).HasColumnName("nombre");
+        });
+
+        modelBuilder.Entity<Tramite>(entity =>
+        {
+            entity.HasKey(e => e.IdTramite).HasName("PK__Tramites__DC2729AE6A30BD91");
+            entity.Property(e => e.IdTramite).HasColumnName("id_tramite");
+            entity.Property(e => e.Activo).HasDefaultValue(true).HasColumnName("activo");
+            entity.Property(e => e.Costo).HasColumnType("decimal(10, 2)").HasColumnName("costo");
+            entity.Property(e => e.Descripcion).HasColumnType("text").HasColumnName("descripcion");
+            entity.Property(e => e.DuracionMinutos).HasColumnName("duracion_minutos");
+            entity.Property(e => e.IdCategoria).HasColumnName("id_categoria");
+            entity.Property(e => e.LimiteDiarioSede).HasColumnName("limite_diario_sede");
+            entity.Property(e => e.FechaInicioPermitida).HasColumnType("date").HasColumnName("fecha_inicio_permitida");
+            entity.Property(e => e.FechaFinPermitida).HasColumnType("date").HasColumnName("fecha_fin_permitida");
+            entity.Property(e => e.NombreTramite).HasMaxLength(100).IsUnicode(false).HasColumnName("nombre_tramite");
+            entity.Property(e => e.Requisitos).HasColumnType("varchar(500)").HasColumnName("requisitos");
+            entity.HasOne(d => d.IdCategoriaNavigation).WithMany(p => p.Tramites)
+                .HasForeignKey(d => d.IdCategoria)
+                .OnDelete(DeleteBehavior.ClientSetNull)
+                .HasConstraintName("FK__Tramites__id_cat__44FF419A");
+        });
+
+        modelBuilder.Entity<UsuariosInterno>(entity =>
+        {
+            entity.HasKey(e => e.IdUsuario).HasName("PK__Usuarios__4E3E04ADB8D06CD7");
+            entity.ToTable("Usuarios_Internos");
+            entity.HasIndex(e => e.Username, "UQ__Usuarios__F3DBC572531AC299").IsUnique();
+            entity.Property(e => e.IdUsuario).HasColumnName("id_usuario");
+            entity.Property(e => e.Activo).HasDefaultValue(true).HasColumnName("activo");
+            entity.Property(e => e.IdRol).HasColumnName("id_rol");
+            entity.Property(e => e.IdSede).HasColumnName("id_sede");
+            entity.Property(e => e.NombreCompleto).HasMaxLength(100).IsUnicode(false).HasColumnName("nombre_completo");
+            entity.Property(e => e.PasswordHash).HasMaxLength(255).IsUnicode(false).HasColumnName("password_hash");
+            entity.Property(e => e.Username).HasMaxLength(50).IsUnicode(false).HasColumnName("username");
+
+       
+            entity.Property(e => e.RequiereCambioPassword).HasColumnName("requiere_cambio_password");
+
+            entity.HasOne(d => d.IdRolNavigation).WithMany(p => p.UsuariosInternos)
+                .HasForeignKey(d => d.IdRol)
+                .OnDelete(DeleteBehavior.ClientSetNull)
+                .HasConstraintName("FK__Usuarios___id_ro__3E52440B");
+            entity.HasOne(d => d.IdSedeNavigation).WithMany(p => p.UsuariosInternos)
+                .HasForeignKey(d => d.IdSede)
+                .OnDelete(DeleteBehavior.ClientSetNull)
+                .HasConstraintName("FK__Usuarios___id_se__3F466844");
+        });
+
+        modelBuilder.Entity<AvisoGlobal>(entity =>
+        {
+            entity.HasKey(e => e.IdAviso).HasName("PK_AvisosGlobales");
+            entity.ToTable("Avisos_Globales");
+            entity.Property(e => e.IdAviso).HasColumnName("id_aviso");
+            entity.Property(e => e.Titulo).HasMaxLength(100).IsUnicode(false).HasColumnName("titulo");
+            entity.Property(e => e.Mensaje).HasColumnType("text").HasColumnName("mensaje");
+            entity.Property(e => e.Activo).HasDefaultValue(true).HasColumnName("activo");
+            entity.Property(e => e.ImagenUrl).HasMaxLength(500).IsUnicode(false).HasColumnName("imagen_url");
+        });
+
+        modelBuilder.Entity<RegistroAcceso>(entity =>
+        {
+            entity.HasKey(e => e.IdAcceso);
+            entity.ToTable("Registro_Accesos");
+            entity.Property(e => e.IdAcceso).HasColumnName("id_acceso");
+            entity.Property(e => e.Username).HasMaxLength(50).IsUnicode(false).HasColumnName("username");
+            entity.Property(e => e.FechaLogin).HasColumnType("datetime").HasColumnName("fecha_login");
+            entity.Property(e => e.FechaLogout).HasColumnType("datetime").HasColumnName("fecha_logout");
+        });
+        modelBuilder.Entity<ConfiguracionAgenda>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.ToTable("Configuracion_Agenda");
+            entity.Property(e => e.Id).HasColumnName("id");
+            entity.Property(e => e.FechaInicio).HasColumnType("date").HasColumnName("fecha_inicio");
+            entity.Property(e => e.FechaFin).HasColumnType("date").HasColumnName("fecha_fin");
+        });
+        OnModelCreatingPartial(modelBuilder);
+
+    }
+
+    partial void OnModelCreatingPartial(ModelBuilder modelBuilder);
+
+}
+</file>
+
+<file path="Models/Role.cs">
+using System;
+using System.Collections.Generic;
+
+namespace RegistroCivilAPI.Models;
+
+public partial class Role
+{
+    public int IdRol { get; set; }
+
+    public string NombreRol { get; set; } = null!;
+
+    public virtual ICollection<UsuariosInterno> UsuariosInternos { get; set; } = new List<UsuariosInterno>();
+}
+</file>
+
+<file path="Models/Sede.cs">
+using System;
+using System.Collections.Generic;
+
+namespace RegistroCivilAPI.Models;
+
+public partial class Sede
+{
+    public int IdSede { get; set; }
+    public string Nombre { get; set; } = null!;
+    public string Municipio { get; set; } = null!;
+    public string? Direccion { get; set; }
+    public bool? Activa { get; set; }
+
+   
+    public virtual ICollection<Cita> Citas { get; set; } = new List<Cita>();
+
+    public virtual ICollection<DiasInhabile> DiasInhabiles { get; set; } = new List<DiasInhabile>();
+    public virtual ICollection<HorariosSede> HorariosSedes { get; set; } = new List<HorariosSede>();
+    public virtual ICollection<UsuariosInterno> UsuariosInternos { get; set; } = new List<UsuariosInterno>();
+}
+</file>
+
+<file path="Models/Tramite.cs">
+using System;
+using System.Collections.Generic;
+
+namespace RegistroCivilAPI.Models;
+
+public partial class Tramite
+{
+    public int IdTramite { get; set; }
+    public int IdCategoria { get; set; }
+    public string NombreTramite { get; set; } = null!;
+    public string? Descripcion { get; set; }
+    public int DuracionMinutos { get; set; }
+    public int LimiteDiarioSede { get; set; }
+    public decimal Costo { get; set; }
+    public bool? Activo { get; set; }
+    public string? Requisitos { get; set; }
+    public DateTime? FechaInicioPermitida { get; set; }
+    public DateTime? FechaFinPermitida { get; set; }
+    public virtual CategoriasTramite IdCategoriaNavigation { get; set; } = null!;
+    public virtual ICollection<Cita> Citas { get; set; } = new List<Cita>();
+}
+</file>
+
+<file path="Models/UsuariosInterno.cs">
+using System;
+using System.Collections.Generic;
+using System.ComponentModel.DataAnnotations.Schema;
+
+namespace RegistroCivilAPI.Models
+{
+    public partial class UsuariosInterno
+    {
+        public int IdUsuario { get; set; }
+        public string Username { get; set; } = null!;
+        public string PasswordHash { get; set; } = null!;
+        public string NombreCompleto { get; set; } = null!;
+        public int IdRol { get; set; }
+        public int IdSede { get; set; }
+        public bool? Activo { get; set; }
+
+      
+        public bool? RequiereCambioPassword { get; set; }
+
+        public virtual Role IdRolNavigation { get; set; } = null!;
+        public virtual Sede IdSedeNavigation { get; set; } = null!;
+        public virtual ICollection<BitacoraAuditorium> BitacoraAuditoria { get; set; } = new List<BitacoraAuditorium>();
+        public int IntentosFallidos { get; set; }
+        public DateTime? BloqueadoHasta { get; set; }
+    }
+}
+</file>
+
+<file path="Properties/launchSettings.json">
+{
+  "$schema": "https://json.schemastore.org/launchsettings.json",
+  "profiles": {
+    "http": {
+      "commandName": "Project",
+      "dotnetRunMessages": true,
+      "launchBrowser": false,
+      "applicationUrl": "http://localhost:5076",
+      "environmentVariables": {
+        "ASPNETCORE_ENVIRONMENT": "Development"
+      }
+    },
+    "https": {
+      "commandName": "Project",
+      "dotnetRunMessages": true,
+      "launchBrowser": false,
+      "applicationUrl": "https://localhost:7080;http://localhost:5076",
+      "environmentVariables": {
+        "ASPNETCORE_ENVIRONMENT": "Development"
+      }
+    }
+  }
+}
+</file>
+
+<file path="Services/EmailService.cs">
+using System;
+using System.Globalization;
+using System.Net;
+using System.Net.Http;
+using System.Text;
+using System.Text.Json;
+using System.Threading;
+using System.Threading.Tasks;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging;
+
+namespace RegistroCivilAPI.Services
+{
+    public interface IEmailService
+    {
+        Task EnviarCorreoConfirmacionAsync(
+            string? correoDestino,
+            string identificador,
+            string folio,
+            DateTime fechaHora,
+            string tramite,
+            decimal costo,
+            string sede,
+            string? requisitos,
+            bool esReagendada = false);
+    }
+
+    public class EmailService : IEmailService
+    {
+        private readonly IConfiguration _config;
+        private readonly IHttpClientFactory _httpClientFactory;
+        private readonly ILogger<EmailService> _logger;
+
+        public EmailService(
+            IConfiguration config,
+            IHttpClientFactory httpClientFactory = null,
+            ILogger<EmailService> logger = null)
+        {
+            _config = config;
+            _httpClientFactory = httpClientFactory;
+            _logger = logger;
+        }
+
+        public async Task EnviarCorreoConfirmacionAsync(
+            string? correoDestino,
+            string identificador,
+            string folio,
+            DateTime fechaHora,
+            string tramite,
+            decimal costo,
+            string sede,
+            string? requisitos,
+            bool esReagendada = false)
+        {
+            if (string.IsNullOrWhiteSpace(correoDestino))
+            {
+                _logger?.LogWarning("No se envió el correo: el correo destinatario está vacío.");
+                return;
+            }
+
+            string apiKey = _config["EmailSettings:ApiKey"] ?? string.Empty;
+            string correoOrigen = _config["EmailSettings:Correo"] ?? string.Empty;
+
+            if (string.IsNullOrWhiteSpace(apiKey))
+            {
+                _logger?.LogError("No se envió el correo: falta configurar EmailSettings:ApiKey en Railway.");
+                return;
+            }
+
+            if (string.IsNullOrWhiteSpace(correoOrigen))
+            {
+                _logger?.LogError("No se envió el correo: falta configurar EmailSettings:Correo.");
+                return;
+            }
+
+            try
+            {
+                string listaRequisitosHtml = string.Empty;
+                if (!string.IsNullOrWhiteSpace(requisitos))
+                {
+                    string[] lineas = requisitos.Split(new[] { '\n', '\r' }, StringSplitOptions.RemoveEmptyEntries);
+                    foreach (var linea in lineas)
+                    {
+                        listaRequisitosHtml += $"<li style='margin-bottom: 8px;'>{WebUtility.HtmlEncode(linea.Trim('•', ' ', '-'))}</li>";
+                    }
+                }
+
+                string tituloPrincipal = esReagendada
+                    ? "Confirmación de Cita Reagendada"
+                    : "Confirmación de Cita Registrada";
+
+                string textoSecundario = esReagendada
+                    ? "Su cita ha sido reagendada exitosamente para una nueva fecha."
+                    : "Su cita ha sido generada exitosamente.";
+
+                // ZONA HORARIA UTC-6: Asegura que la fecha y hora mostrada corresponda a San Luis Potosí
+                DateTime horaCitaMexico = fechaHora.Kind == DateTimeKind.Utc
+                    ? fechaHora.AddHours(-6)
+                    : fechaHora;
+
+                string identificadorHtml = WebUtility.HtmlEncode(identificador);
+                string folioHtml = WebUtility.HtmlEncode(folio);
+                string tramiteHtml = WebUtility.HtmlEncode(tramite);
+                string sedeHtml = WebUtility.HtmlEncode(sede);
+                string costoTexto = costo.ToString("0.00", CultureInfo.InvariantCulture);
+
+                string mensajeHtml = $@"
+                <div style='font-family: Arial, sans-serif; color: #333; max-width: 600px; margin: 0 auto; border: 1px solid #ddd; border-radius: 8px; overflow: hidden;'>
+                    <div style='text-align: center; background-color: #ffffff; padding: 0;'>
+                        <img src='http://201.144.103.221/citas/images/Sin_titulo.png' alt='Gobierno del Estado SLP' style='width: 100%; height: auto;' />
+                    </div>
+                    <div style='padding: 30px 20px;'>
+                        <h2 style='color: #055A1C; text-align: center; margin-top: 0;'>{tituloPrincipal}</h2>
+                        <p style='font-size: 15px; margin-top: 20px;'>Estimado/a <b>{identificadorHtml}</b>,</p>
+                        <p style='font-size: 15px;'>{textoSecundario} A continuación, le presentamos los detalles:</p>
+
+                        <div style='background-color: #f9f9f9; padding: 20px; border-radius: 6px; border-left: 5px solid #055A1C; margin: 25px 0;'>
+                            <p style='margin: 0 0 10px 0; font-size: 15px;'><b>Trámite:</b> {tramiteHtml}</p>
+                            <p style='margin: 0 0 10px 0; font-size: 15px;'><b>Costo del Servicio:</b> <span style='color: #055A1C; font-weight: bold;'>${costoTexto}</span></p>
+                            <p style='margin: 0 0 10px 0; font-size: 15px;'><b>Nueva Fecha y Hora:</b> <span style='color: #E60064; font-weight: bold;'>{horaCitaMexico.ToString("dd/MM/yyyy HH:mm")} hrs</span></p>
+                            <p style='margin: 0 0 15px 0; font-size: 15px;'><b>Sede:</b> {sedeHtml}</p>
+                            <h3 style='margin: 0; color: #055A1C; font-size: 20px;'>FOLIO: {folioHtml}</h3>
+                        </div>
+
+                        <h4 style='color: #055A1C; margin-top: 30px; margin-bottom: 10px; font-size: 16px;'>📋 REQUISITOS OBLIGATORIOS</h4>
+                        <div style='background-color: #fff9e6; padding: 15px 20px; border: 1px dashed #ffc107; border-radius: 6px;'>
+                            <ul style='color: #555; line-height: 1.5; font-size: 14px; margin: 0; padding-left: 20px;'>
+                                {listaRequisitosHtml}
+                            </ul>
+                        </div>
+
+                        <h4 style='color: #E60064; margin-top: 30px; margin-bottom: 10px; font-size: 16px;'>⚠️ AVISOS IMPORTANTES Y PENALIZACIÓN</h4>
+                        <ul style='color: #555; line-height: 1.6; padding-left: 20px; font-size: 14px; margin-top: 0;'>
+                            <li><strong>El trámite es estrictamente personal.</strong> Es obligatorio presentar Identificación Oficial (ID) vigente.</li>
+                            <li><strong>SISTEMA DE PENALIZACIÓN:</strong> Si usted agenda su cita y NO asiste, el sistema lo bloqueará automáticamente, impidiéndole agendar un nuevo trámite durante <strong>1 semana</strong>.</li>
+                        </ul>
+
+                        <hr style='border: 0; border-top: 1px solid #eee; margin: 30px 0;' />
+                        <p style='font-size: 11px; color: #999; text-align: center; margin: 0;'>Por favor, <strong>NO conteste este correo.</strong> Las respuestas a esta dirección no son monitoreadas.</p>
+                    </div>
+                </div>";
+
+                using var request = new HttpRequestMessage(HttpMethod.Post, "https://api.brevo.com/v3/smtp/email");
+                request.Headers.Add("api-key", apiKey);
+
+                var payload = new
+                {
+                    sender = new { name = "Registro Civil Citas SLP", email = correoOrigen },
+                    to = new[] { new { email = correoDestino.Trim(), name = identificador } },
+                    subject = $"{tituloPrincipal} - Folio: {folio}",
+                    htmlContent = mensajeHtml
+                };
+
+                string jsonContent = JsonSerializer.Serialize(payload);
+                request.Content = new StringContent(jsonContent, Encoding.UTF8, "application/json");
+
+                using var httpClient = _httpClientFactory != null ? _httpClientFactory.CreateClient() : new HttpClient();
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+
+                HttpResponseMessage response = await httpClient.SendAsync(request, cts.Token);
+
+                if (!response.IsSuccessStatusCode)
+                {
+                    string errorResponse = await response.Content.ReadAsStringAsync();
+                    _logger?.LogError("Brevo rechazó el envío. Código: {Status}. Detalle: {Detalle}", (int)response.StatusCode, errorResponse);
+                    return;
+                }
+
+                _logger?.LogInformation("Correo enviado exitosamente a {Destino} mediante API de Brevo.", correoDestino);
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogError(ex, "Error inesperado al enviar el correo por API de Brevo.");
+            }
+        }
+    }
+}
+</file>
+
+<file path="appsettings.Development.json">
+{
+  "Logging": {
+    "LogLevel": {
+      "Default": "Information",
+      "Microsoft.AspNetCore": "Warning"
+    }
+  }
+}
+</file>
+
+<file path="appsettings.json">
+{
+  "Logging": {
+    "LogLevel": {
+      "Default": "Information",
+      "Microsoft.AspNetCore": "Warning"
+    }
+  },
+  "AllowedHosts": "*",
+  "ConnectionStrings": {
+    "DefaultConnection": "Data Source=sql8006.site4now.net;Initial Catalog=db_acee3f_citas;User Id=db_acee3f_citas_admin;Password=Registro2026!;Encrypt=True;TrustServerCertificate=True;"
+  },
+  "EmailSettings": {
+    "Correo": "javier.egr06@gmail.com",
+    "PasswordApp": "REEMPLAZAR_EN_PRODUCCION"
+  },
+  "RecaptchaSettings": {
+    "SecretKey": "REEMPLAZAR_EN_PRODUCCION"
+  },
+  "JwtSettings": {
+    "SecretKey": "REEMPLAZAR_EN_PRODUCCION",
+    "Issuer": "RegistroCivilAPI",
+    "Audience": "RegistroCivilApp"
+  }
+}
+</file>
+
+<file path="Program.cs">
+using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.HttpOverrides;
+using Microsoft.AspNetCore.RateLimiting;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using Microsoft.IdentityModel.Tokens;
+using RegistroCivilAPI.Models;
+using RegistroCivilAPI.Services;
+using System;
+using System.Text;
+using System.Threading.RateLimiting;
+
+var builder = WebApplication.CreateBuilder(args);
+
+// ====================================================================
+// CRÍTICO PARA LAN: Escuchar en todas las computadoras de la red local
+// ====================================================================
+builder.WebHost.UseUrls("http://0.0.0.0:5000");
+
+builder.Services.AddRateLimiter(options =>
+{
+    options.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(httpContext =>
+        RateLimitPartition.GetFixedWindowLimiter(
+            partitionKey: httpContext.Connection.RemoteIpAddress?.ToString() ?? "Local",
+            factory: partition => new FixedWindowRateLimiterOptions
+            {
+                AutoReplenishment = true,
+                PermitLimit = 100,
+                Window = TimeSpan.FromMinutes(1)
+            }));
+    options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+});
+
+builder.Services.AddDbContext<RegistroCivilCitasContext>(options =>
+    options.UseSqlServer(builder.Configuration.GetConnectionString("DefaultConnection")));
+
+builder.Services.AddControllers();
+
+builder.Services.AddCors(options =>
+{
+    options.AddPolicy("PermitirTodo", policy =>
+    {
+        policy.AllowAnyOrigin()
+              .AllowAnyHeader()
+              .AllowAnyMethod();
+    });
+});
+
+builder.Services.AddScoped<IEmailService, EmailService>();
+
+var jwtKey = builder.Configuration["JwtSettings:SecretKey"];
+var keyBytes = Encoding.UTF8.GetBytes(jwtKey);
+
+builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
+    .AddJwtBearer(options =>
+    {
+        options.RequireHttpsMetadata = false;
+        options.SaveToken = true;
+        options.TokenValidationParameters = new TokenValidationParameters
+        {
+            ValidateIssuerSigningKey = true,
+            IssuerSigningKey = new SymmetricSecurityKey(keyBytes),
+            ValidateIssuer = true,
+            ValidIssuer = builder.Configuration["JwtSettings:Issuer"],
+            ValidateAudience = true,
+            ValidAudience = builder.Configuration["JwtSettings:Audience"],
+            ValidateLifetime = true,
+            ClockSkew = TimeSpan.Zero
+        };
+    });
+
+builder.Services.Configure<ForwardedHeadersOptions>(options =>
+{
+    options.ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto;
+    options.ForwardLimit = 1;
+});
+
+builder.Services.AddHttpClient();
+
+var app = builder.Build();
+
+app.UseForwardedHeaders();
+
+app.UseExceptionHandler(errorApp =>
+{
+    errorApp.Run(async context =>
+    {
+        context.Response.StatusCode = 500;
+        context.Response.ContentType = "application/json";
+        await context.Response.WriteAsync("{\"mensaje\": \"Ha ocurrido un error interno en el servidor.\"}");
+    });
+});
+
+app.UseCors("PermitirTodo");
+app.UseRateLimiter();
+app.UseAuthentication();
+app.UseAuthorization();
+
+app.Use(async (context, next) =>
+{
+    context.Response.Headers["X-Content-Type-Options"] = "nosniff";
+    context.Response.Headers["X-Frame-Options"] = "DENY";
+    context.Response.Headers["X-XSS-Protection"] = "1; mode=block";
+    context.Response.Headers["Referrer-Policy"] = "strict-origin-when-cross-origin";
+    context.Response.Headers["Content-Security-Policy"] = "frame-ancestors 'none';";
+    await next();
+});
+
+app.MapControllers();
+
+app.Run();
+</file>
+
+<file path="RegistroCivilAPI.csproj">
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+	  <NuGetAudit>false</NuGetAudit>
+	  <UserSecretsId>0bff1301-dbc3-481d-b2e7-2f3bd9ad1a0d</UserSecretsId>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="BCrypt.Net-Next" Version="4.2.0" />
+    <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.10" />
+    <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.9" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.9">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+    <PackageReference Include="Microsoft.EntityFrameworkCore.SqlServer" Version="10.0.9" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Tools" Version="10.0.9">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+  </ItemGroup>
+
+</Project>
+</file>
+
+<file path="RegistroCivilAPI.http">
+@RegistroCivilAPI_HostAddress = http://localhost:5076
+
+GET {{RegistroCivilAPI_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###
+</file>
+
+</files>

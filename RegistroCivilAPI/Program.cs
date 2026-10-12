@@ -15,6 +15,10 @@ using System.Threading.RateLimiting;
 
 var builder = WebApplication.CreateBuilder(args);
 
+// ====================================================================
+// CRÍTICO PARA LAN: Escuchar en todas las computadoras de la red local
+// ====================================================================
+builder.WebHost.UseUrls("http://0.0.0.0:5000");
 
 builder.Services.AddRateLimiter(options =>
 {
@@ -30,12 +34,10 @@ builder.Services.AddRateLimiter(options =>
     options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
 });
 
-
 builder.Services.AddDbContext<RegistroCivilCitasContext>(options =>
     options.UseSqlServer(builder.Configuration.GetConnectionString("DefaultConnection")));
 
 builder.Services.AddControllers();
-
 
 builder.Services.AddCors(options =>
 {
@@ -48,7 +50,6 @@ builder.Services.AddCors(options =>
 });
 
 builder.Services.AddScoped<IEmailService, EmailService>();
-
 
 var jwtKey = builder.Configuration["JwtSettings:SecretKey"];
 var keyBytes = Encoding.UTF8.GetBytes(jwtKey);
@@ -76,11 +77,10 @@ builder.Services.Configure<ForwardedHeadersOptions>(options =>
     options.ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto;
     options.ForwardLimit = 1;
 });
-// Habilita el reciclaje inteligente de conexiones HTTP
+
 builder.Services.AddHttpClient();
 
 var app = builder.Build();
-
 
 app.UseForwardedHeaders();
 
@@ -95,27 +95,17 @@ app.UseExceptionHandler(errorApp =>
 });
 
 app.UseCors("PermitirTodo");
-app.UseRateLimiter();             
-app.UseAuthentication();      
+app.UseRateLimiter();
+app.UseAuthentication();
 app.UseAuthorization();
 
 app.Use(async (context, next) =>
 {
-    // 1. Evita que disfracen archivos maliciosos (MIME Sniffing)
     context.Response.Headers["X-Content-Type-Options"] = "nosniff";
-
-    // 2. Bloquea que otra página meta tu sitio web en un Iframe (Clickjacking)
     context.Response.Headers["X-Frame-Options"] = "DENY";
-
-    // 3. Filtro básico contra ataques XSS en navegadores antiguos
     context.Response.Headers["X-XSS-Protection"] = "1; mode=block";
-
-    // 4. Protege la información de la URL al navegar a sitios externos
     context.Response.Headers["Referrer-Policy"] = "strict-origin-when-cross-origin";
-
-    // 5. Política de Seguridad de Contenido (CSP) básica para evitar Iframes no autorizados
     context.Response.Headers["Content-Security-Policy"] = "frame-ancestors 'none';";
-
     await next();
 });
 

@@ -21,6 +21,7 @@ namespace RegistroCivilAPI.Controllers
         private readonly IConfiguration _config;
         private readonly IEmailService _emailService;
         private readonly IHttpClientFactory _httpClientFactory;
+
         public CitasController(RegistroCivilCitasContext context, IConfiguration config, IEmailService emailService, IHttpClientFactory httpClientFactory)
         {
             _context = context;
@@ -31,19 +32,24 @@ namespace RegistroCivilAPI.Controllers
 
         private async Task AutoActualizarInasistenciasAsync()
         {
+            // FIX DEL BUG DEL "PICK": Inyectar la hora UTC-6 de San Luis Potosí explícitamente
+            // para evitar que SmarterASP adelante las penalizaciones 6 horas.
+            DateTime horaMexico = DateTime.UtcNow.AddHours(-6);
             await _context.Database.ExecuteSqlRawAsync(
-                "UPDATE Citas SET estatus = 'NO_ASISTIO' WHERE estatus IN ('PROGRAMADA', 'CONFIRMADA', 'REPROGRAMADA') AND fecha_hora_fin < GETDATE()"
+                "UPDATE Citas SET estatus = 'NO_ASISTIO' WHERE estatus IN ('PROGRAMADA', 'CONFIRMADA', 'REPROGRAMADA') AND fecha_hora_fin < {0}", horaMexico
             );
         }
 
         [HttpGet("Horarios")]
         public async Task<ActionResult<IEnumerable<string>>> ObtenerHorariosDisponibles(int idSede, int idTramite, [FromQuery] string fecha)
         {
-            // 1. Forzamos el parseo seguro sin zona horaria
+            await AutoActualizarInasistenciasAsync();
+
             if (!DateTime.TryParse(fecha, out DateTime fechaCita))
                 return BadRequest("Formato de fecha inválido.");
 
-            if (fechaCita.Date < DateTime.Today) return Ok(new List<string>());
+            DateTime hoyMexicoFecha = DateTime.UtcNow.AddHours(-6).Date;
+            if (fechaCita.Date < hoyMexicoFecha) return Ok(new List<string>());
 
             var config = await _context.ConfiguracionAgendas.FirstOrDefaultAsync(c => c.Id == 1);
             if (config != null)
@@ -72,18 +78,17 @@ namespace RegistroCivilAPI.Controllers
             int limiteDiario = tramite.LimiteDiarioSede > 0 ? tramite.LimiteDiarioSede : 999;
 
             var cantidadCitasDia = await _context.Citas
-                .CountAsync(c => c.IdSede == idSede && c.IdTramite == idTramite && c.FechaHoraInicio.Date == fechaCita.Date && (c.Estatus == "PROGRAMADA" || c.Estatus == "REPROGRAMADA"));
+                .CountAsync(c => c.IdSede == idSede && c.IdTramite == idTramite && c.FechaHoraInicio.Date == fechaCita.Date && (c.Estatus == "PROGRAMADA" || c.Estatus == "CONFIRMADA" || c.Estatus == "REPROGRAMADA"));
 
             if (cantidadCitasDia >= limiteDiario) return Ok(new List<string>());
 
-            var horasOcupadas = await _context.Citas
-                .Where(c => c.IdSede == idSede && c.FechaHoraInicio.Date == fechaCita.Date && (c.Estatus == "PROGRAMADA" || c.Estatus == "REPROGRAMADA"))
-                .Select(c => TimeOnly.FromDateTime(c.FechaHoraInicio)).ToListAsync();
+            var citasOcupadas = await _context.Citas
+                .Where(c => c.IdSede == idSede && c.FechaHoraInicio < fechaCita.Date.AddDays(1) && c.FechaHoraFin > fechaCita.Date && (c.Estatus == "PROGRAMADA" || c.Estatus == "CONFIRMADA" || c.Estatus == "REPROGRAMADA"))
+                .Select(c => new { c.FechaHoraInicio, c.FechaHoraFin }).ToListAsync();
 
             var horasDisponibles = new List<string>();
             TimeOnly horaActual = horarioSede.HoraApertura;
 
-            // Corrección UTC-6 para la nube de Railway
             DateTime horaMexico = DateTime.UtcNow.AddHours(-6);
             TimeOnly now = TimeOnly.FromDateTime(horaMexico);
             DateTime hoyMexico = horaMexico.Date;
@@ -95,7 +100,10 @@ namespace RegistroCivilAPI.Controllers
                     horaActual = horaActual.AddMinutes(intervalo);
                     continue;
                 }
-                if (!horasOcupadas.Contains(horaActual))
+                DateTime inicioPropuesto = fechaCita.Date.Add(horaActual.ToTimeSpan());
+                DateTime finPropuesto = inicioPropuesto.AddMinutes(intervalo);
+                bool horarioOcupado = citasOcupadas.Any(c => c.FechaHoraInicio < finPropuesto && c.FechaHoraFin > inicioPropuesto);
+                if (!horarioOcupado)
                 {
                     horasDisponibles.Add(horaActual.ToString("HH:mm"));
                 }
@@ -109,6 +117,16 @@ namespace RegistroCivilAPI.Controllers
         {
             if (!await ValidarReCaptcha(solicitud.CaptchaToken))
                 return BadRequest(new { mensaje = "Verificación de seguridad fallida. Por favor, complete el Captcha." });
+
+            if (string.IsNullOrWhiteSpace(solicitud.Correo) || !System.Net.Mail.MailAddress.TryCreate(solicitud.Correo.Trim(), out _))
+                return BadRequest(new { mensaje = "Escribe un correo electrónico válido para recibir la confirmación de la cita." });
+
+            string correoDestino = solicitud.Correo.Trim();
+            if (correoDestino.Length > 100)
+                return BadRequest(new { mensaje = "El correo electrónico no puede superar los 100 caracteres." });
+
+            await AutoActualizarInasistenciasAsync();
+
             try
             {
                 Ciudadano ciudadano = null;
@@ -121,7 +139,7 @@ namespace RegistroCivilAPI.Controllers
                     var usuarioConMismoTel = await _context.Ciudadanos.FirstOrDefaultAsync(c => c.Telefono == telLimpio);
                     if (usuarioConMismoTel != null && usuarioConMismoTel.Nombre.ToUpper() != nombreBuscado)
                     {
-                        return BadRequest(new { mensaje = "Alerta de Seguridad: Este número de teléfono ya está registrado a nombre de otra persona. No se permiten gestores." });
+                        return BadRequest(new { mensaje = "Alerta de Seguridad: Este número de teléfono ya está registrado a nombre de otra persona." });
                     }
                 }
 
@@ -159,17 +177,18 @@ namespace RegistroCivilAPI.Controllers
                     await _context.SaveChangesAsync();
                 }
 
-                var penalizado = await _context.Citas.AnyAsync(c => c.IdCiudadano == ciudadano.IdCiudadano && c.Estatus == "NO_ASISTIO" && c.FechaHoraInicio >= DateTime.Now.AddDays(-7));
+                DateTime limiteCastigo = DateTime.UtcNow.AddHours(-6).AddDays(-7);
+                var penalizado = await _context.Citas.AnyAsync(c => c.IdCiudadano == ciudadano.IdCiudadano && c.Estatus == "NO_ASISTIO" && c.FechaHoraInicio >= limiteCastigo);
                 if (penalizado)
                 {
-                    return BadRequest(new { mensaje = "Sistema de Penalización: Usted cuenta con una inasistencia reciente. Por reglamento, podrá agendar nuevas citas al transcurrir 1 semana desde la falta." });
+                    return BadRequest(new { mensaje = "Sistema de Penalización: Usted cuenta con una inasistencia reciente. Podrá agendar nuevas citas al transcurrir 1 semana." });
                 }
 
                 var citaMismoTramite = await _context.Citas.AnyAsync(c =>
                     c.IdCiudadano == ciudadano.IdCiudadano &&
                     c.IdTramite == solicitud.IdTramite &&
                     c.FechaHoraInicio.Date == solicitud.FechaHora.Date &&
-                    (c.Estatus == "PROGRAMADA" || c.Estatus == "REPROGRAMADA"));
+                    (c.Estatus == "PROGRAMADA" || c.Estatus == "CONFIRMADA" || c.Estatus == "REPROGRAMADA"));
 
                 if (citaMismoTramite) return BadRequest(new { mensaje = "Alerta: Usted ya tiene una cita programada para este trámite exacto en este día." });
 
@@ -186,7 +205,7 @@ namespace RegistroCivilAPI.Controllers
                 {
                     bool solapada = await _context.Citas.AnyAsync(c =>
                         c.IdSede == solicitud.IdSede &&
-                        (c.Estatus == "PROGRAMADA" || c.Estatus == "REPROGRAMADA") &&
+                        (c.Estatus == "PROGRAMADA" || c.Estatus == "CONFIRMADA" || c.Estatus == "REPROGRAMADA") &&
                         c.FechaHoraInicio < fechaFin &&
                         c.FechaHoraFin > solicitud.FechaHora);
 
@@ -212,13 +231,15 @@ namespace RegistroCivilAPI.Controllers
                 }
 
                 var sedeEntity = await _context.Sedes.FindAsync(solicitud.IdSede);
+                ciudadano.Correo = correoDestino;
+                await _context.SaveChangesAsync();
                 string nombreSede = sedeEntity?.Nombre ?? "Oficina del Registro Civil";
                 string requisitosTramite = tramiteEntity.Requisitos ?? "Por favor comuníquese a la sede para confirmar los requisitos obligatorios.";
 
                 string nombreCompleto = $"{ciudadano.Nombre} {ciudadano.PrimerApellido} {ciudadano.SegundoApellido}".Trim();
                 string identificadorParaCorreo = !string.IsNullOrWhiteSpace(nombreCompleto) ? nombreCompleto : $"CURP: {ciudadano.Curp}";
 
-                await _emailService.EnviarCorreoConfirmacionAsync(ciudadano.Correo, identificadorParaCorreo, folio, solicitud.FechaHora, tramiteEntity.NombreTramite, tramiteEntity.Costo, nombreSede, requisitosTramite);
+                await _emailService.EnviarCorreoConfirmacionAsync(correoDestino, identificadorParaCorreo, folio, solicitud.FechaHora, tramiteEntity.NombreTramite, tramiteEntity.Costo, nombreSede, requisitosTramite);
 
                 return Ok(new { mensaje = "Cita agendada con éxito", folio = folio });
             }
@@ -269,23 +290,20 @@ namespace RegistroCivilAPI.Controllers
             var cita = await _context.Citas.FirstOrDefaultAsync(c => c.IdCita == folio);
             if (cita == null) return NotFound(new { mensaje = "Cita no encontrada." });
             if (cita.Estatus == "CANCELADA") return BadRequest(new { mensaje = "La cita ya se encuentra cancelada." });
-            if (cita.FechaHoraInicio < DateTime.Now) return BadRequest(new { mensaje = "No se puede cancelar una cita de una fecha que ya pasó." });
+
+            DateTime horaMexico = DateTime.UtcNow.AddHours(-6);
+            if (cita.FechaHoraInicio < horaMexico) return BadRequest(new { mensaje = "No se puede cancelar una cita de una fecha que ya pasó." });
 
             cita.Estatus = "CANCELADA";
 
-            // --- INICIO BLINDAJE DE CONCURRENCIA ---
             try
             {
                 await _context.SaveChangesAsync();
             }
             catch (DbUpdateConcurrencyException)
             {
-                return StatusCode(StatusCodes.Status409Conflict, new
-                {
-                    mensaje = "Alerta de Concurrencia: Otro empleado acaba de modificar el estatus de esta cita. Por favor, recargue la tabla para ver la información más reciente y evitar sobreescribir datos."
-                });
+                return StatusCode(StatusCodes.Status409Conflict, new { mensaje = "Alerta de Concurrencia: Otro empleado acaba de modificar el estatus de esta cita." });
             }
-            // --- FIN BLINDAJE DE CONCURRENCIA ---
 
             return Ok(new { mensaje = "Su cita ha sido cancelada con éxito. El espacio ha sido liberado." });
         }
@@ -312,7 +330,7 @@ namespace RegistroCivilAPI.Controllers
                 bool solapada = await _context.Citas.AnyAsync(c =>
                     c.IdCita != folio &&
                     c.IdSede == cita.IdSede &&
-                    (c.Estatus == "PROGRAMADA" || c.Estatus == "REPROGRAMADA") &&
+                    (c.Estatus == "PROGRAMADA" || c.Estatus == "CONFIRMADA" || c.Estatus == "REPROGRAMADA") &&
                     c.FechaHoraInicio < nuevaFechaFin &&
                     c.FechaHoraFin > dto.NuevaFechaHora);
 
@@ -329,16 +347,11 @@ namespace RegistroCivilAPI.Controllers
                 await _context.SaveChangesAsync();
                 await transaction.CommitAsync();
             }
-            // --- INICIO BLINDAJE DE CONCURRENCIA ---
             catch (DbUpdateConcurrencyException)
             {
                 await transaction.RollbackAsync();
-                return StatusCode(StatusCodes.Status409Conflict, new
-                {
-                    mensaje = "Alerta de Concurrencia: Otro empleado acaba de modificar el estatus de esta cita. Por favor, recargue la tabla para ver la información más reciente y evitar sobreescribir datos."
-                });
+                return StatusCode(StatusCodes.Status409Conflict, new { mensaje = "Alerta de Concurrencia: Otro empleado modificó la cita." });
             }
-            // --- FIN BLINDAJE DE CONCURRENCIA ---
             catch
             {
                 await transaction.RollbackAsync();
@@ -357,7 +370,6 @@ namespace RegistroCivilAPI.Controllers
         [Authorize]
         public async Task<ActionResult> ObtenerCitasPorSede(int idSede, [FromQuery] string? fecha = null, [FromQuery] string? busqueda = null, [FromQuery] int pagina = 1, [FromQuery] int registrosPorPagina = 50)
         {
-
             var userSedeClaim = User.FindFirst("SedeId")?.Value;
             var userRole = User.FindFirst(ClaimTypes.Role)?.Value;
 
@@ -382,7 +394,6 @@ namespace RegistroCivilAPI.Controllers
             }
 
             bool isSuperAdmin = userRole == "Super Administrador";
-
 
             int totalRegistros = await query.CountAsync();
             int totalPaginas = (int)Math.Ceiling(totalRegistros / (double)registrosPorPagina);
@@ -422,24 +433,17 @@ namespace RegistroCivilAPI.Controllers
             var cita = await _context.Citas.FirstOrDefaultAsync(c => c.IdCita == folio);
             if (cita == null) return NotFound(new { mensaje = "Cita no encontrada." });
 
-            var usernameClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+            var usernameClaim = User.FindFirst(ClaimTypes.Name)?.Value;
             var userSedeClaim = User.FindFirst("SedeId")?.Value;
             var userRole = User.FindFirst(ClaimTypes.Role)?.Value;
 
-            if (string.IsNullOrEmpty(usernameClaim))
-                return Unauthorized(new { mensaje = "Token inválido." });
-
-            if (userRole != "Super Administrador" && userSedeClaim != cita.IdSede.ToString())
-            {
-                return StatusCode(403, new { mensaje = "Acceso denegado. Esta cita pertenece a otra sede." });
-            }
+            if (string.IsNullOrEmpty(usernameClaim)) return Unauthorized(new { mensaje = "Token inválido." });
+            if (userRole != "Super Administrador" && userSedeClaim != cita.IdSede.ToString()) return StatusCode(403, new { mensaje = "Acceso denegado. Esta cita pertenece a otra sede." });
 
             var usuarioReal = await _context.UsuariosInternos.FirstOrDefaultAsync(u => u.Username == usernameClaim);
-            if (usuarioReal == null)
-                return Unauthorized(new { mensaje = "Usuario no encontrado en el sistema." });
+            if (usuarioReal == null) return Unauthorized(new { mensaje = "Usuario no encontrado en el sistema." });
 
             int idUsuarioReal = usuarioReal.IdUsuario;
-
             string valorAnterior = cita.Estatus;
             cita.Estatus = dto.NuevoEstatus;
 
@@ -455,20 +459,14 @@ namespace RegistroCivilAPI.Controllers
             };
             _context.BitacoraAuditoria.Add(bitacora);
 
-
-            // --- INICIO BLINDAJE DE CONCURRENCIA ---
             try
             {
                 await _context.SaveChangesAsync();
             }
             catch (DbUpdateConcurrencyException)
             {
-                return StatusCode(StatusCodes.Status409Conflict, new
-                {
-                    mensaje = "Alerta de Concurrencia: Otro empleado acaba de modificar el estatus de esta cita. Por favor, recargue la tabla para ver la información más reciente y evitar sobreescribir datos."
-                });
+                return StatusCode(StatusCodes.Status409Conflict, new { mensaje = "Alerta de Concurrencia: Otro empleado acaba de modificar el estatus de esta cita." });
             }
-            // --- FIN BLINDAJE DE CONCURRENCIA ---
 
             return Ok(new { mensaje = $"La cita se ha marcado como {dto.NuevoEstatus} correctamente." });
         }

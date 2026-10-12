@@ -3,7 +3,9 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.IdentityModel.Tokens;
+using Microsoft.EntityFrameworkCore.Storage;
 using RegistroCivilAPI.Models;
+using System.Data;
 using System;
 using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
@@ -79,22 +81,45 @@ namespace RegistroCivilAPI.Controllers
             user.BloqueadoHasta = null;
             await _context.SaveChangesAsync();
 
-            // Consulta original conservada para registrar el acceso
+            // Cierra accesos anteriores abandonados y crea el acceso actual en una sola transacción.
             int idAcceso = 0;
-            using (var cmd = _context.Database.GetDbConnection().CreateCommand())
+            DateTime horaMexico = DateTime.UtcNow.AddHours(-6);
+            await using (var transaction = await _context.Database.BeginTransactionAsync(IsolationLevel.Serializable))
             {
-                cmd.CommandText = "INSERT INTO Registro_Accesos (username, fecha_login) OUTPUT INSERTED.id_acceso VALUES (@username, GETDATE())";
+                try
+                {
+                    await _context.Database.ExecuteSqlRawAsync(
+                        "UPDATE Registro_Accesos SET fecha_logout = {0} WHERE fecha_logout IS NULL AND fecha_login <= {1}",
+                        horaMexico, horaMexico.AddHours(-8));
+                    await _context.Database.ExecuteSqlRawAsync(
+                        "UPDATE Registro_Accesos SET fecha_logout = {0} WHERE username = {1} AND fecha_logout IS NULL",
+                        horaMexico, user.Username);
 
-                var paramUsername = cmd.CreateParameter();
-                paramUsername.ParameterName = "@username";
-                paramUsername.Value = user.Username;
-                cmd.Parameters.Add(paramUsername);
+                    await using var cmd = _context.Database.GetDbConnection().CreateCommand();
+                    cmd.Transaction = transaction.GetDbTransaction();
+                    cmd.CommandText = "INSERT INTO Registro_Accesos (username, fecha_login) OUTPUT INSERTED.id_acceso VALUES (@username, @fechaLogin)";
 
-                await _context.Database.OpenConnectionAsync();
-                idAcceso = (int)await cmd.ExecuteScalarAsync();
+                    var paramUsername = cmd.CreateParameter();
+                    paramUsername.ParameterName = "@username";
+                    paramUsername.Value = user.Username;
+                    cmd.Parameters.Add(paramUsername);
+
+                    var paramFechaLogin = cmd.CreateParameter();
+                    paramFechaLogin.ParameterName = "@fechaLogin";
+                    paramFechaLogin.Value = horaMexico;
+                    cmd.Parameters.Add(paramFechaLogin);
+
+                    idAcceso = Convert.ToInt32(await cmd.ExecuteScalarAsync());
+                    await transaction.CommitAsync();
+                }
+                catch
+                {
+                    await transaction.RollbackAsync();
+                    throw;
+                }
             }
 
-            var tokenString = GenerarTokenJWT(user);
+            var tokenString = GenerarTokenJWT(user, idAcceso);
 
             // Payload original conservado
             return Ok(new
@@ -117,19 +142,20 @@ namespace RegistroCivilAPI.Controllers
         public async Task<ActionResult> Logout(int idAcceso)
         {
 
-            var usernameClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+            var usernameClaim = User.FindFirst(ClaimTypes.Name)?.Value;
+            var accesoClaim = User.FindFirst("AccesoId")?.Value;
 
-            if (string.IsNullOrEmpty(usernameClaim))
+            if (string.IsNullOrEmpty(usernameClaim) || !int.TryParse(accesoClaim, out int idAccesoToken) || idAccesoToken != idAcceso)
                 return Unauthorized();
 
             await _context.Database.ExecuteSqlRawAsync(
-                "UPDATE Registro_Accesos SET fecha_logout = GETDATE() WHERE id_acceso = {0} AND username = {1}",
-                idAcceso, usernameClaim);
+                "UPDATE Registro_Accesos SET fecha_logout = {0} WHERE id_acceso = {1} AND username = {2} AND fecha_logout IS NULL",
+                DateTime.UtcNow.AddHours(-6), idAcceso, usernameClaim);
 
             return Ok();
         }
 
-        private string GenerarTokenJWT(UsuariosInterno user)
+        private string GenerarTokenJWT(UsuariosInterno user, int idAcceso)
         {
             var jwtSettings = _config.GetSection("JwtSettings");
             var keyBytes = Encoding.UTF8.GetBytes(jwtSettings["SecretKey"]);
@@ -138,7 +164,9 @@ namespace RegistroCivilAPI.Controllers
             {
                 new Claim(JwtRegisteredClaimNames.Sub, user.Username),
                 new Claim(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString()),
+                new Claim(ClaimTypes.Name, user.Username),
                 new Claim(ClaimTypes.NameIdentifier, user.IdUsuario.ToString()),
+                new Claim("AccesoId", idAcceso.ToString()),
                 new Claim(ClaimTypes.Role, user.IdRolNavigation.NombreRol),
                 new Claim("SedeId", user.IdSede.ToString())
             };

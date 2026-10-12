@@ -90,7 +90,7 @@ namespace RegistroCivilAPI.Controllers
         public async Task<ActionResult> DeshacerCambio(int idBitacora)
         {
           
-            var usernameClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+            var usernameClaim = User.FindFirst(ClaimTypes.Name)?.Value;
             if (string.IsNullOrEmpty(usernameClaim))
                 return Unauthorized(new { mensaje = "Token inválido." });
 

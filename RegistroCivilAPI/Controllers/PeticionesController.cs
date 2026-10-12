@@ -6,8 +6,8 @@ using System.Collections.Generic;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Authorization;
 using System.Security.Claims;
-// Necesario para HttpClient
 using System.Net.Http;
+using System.Text.Json;
 
 namespace RegistroCivilAPI.Controllers
 {
@@ -18,12 +18,14 @@ namespace RegistroCivilAPI.Controllers
         private readonly RegistroCivilCitasContext _context;
         private readonly IHttpClientFactory _httpClientFactory;
         private readonly IConfiguration _config;
+        private readonly ILogger<PeticionesController> _logger;
 
-        public PeticionesController(RegistroCivilCitasContext context, IHttpClientFactory httpClientFactory, IConfiguration config)
+        public PeticionesController(RegistroCivilCitasContext context, IHttpClientFactory httpClientFactory, IConfiguration config, ILogger<PeticionesController> logger)
         {
             _context = context;
             _httpClientFactory = httpClientFactory;
             _config = config;
+            _logger = logger;
         }
 
         [HttpGet]
@@ -61,20 +63,16 @@ namespace RegistroCivilAPI.Controllers
         [Authorize]
         public async Task<ActionResult> GetMisPeticiones(string username)
         {
-
-            var tokenUsername = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+            var tokenUsername = User.FindFirst(ClaimTypes.Name)?.Value;
             var userRole = User.FindFirst(ClaimTypes.Role)?.Value;
 
             if (userRole != "Super Administrador" && !string.Equals(tokenUsername, username, StringComparison.OrdinalIgnoreCase))
-            {
                 return StatusCode(403, new { mensaje = "Acceso denegado. Solo puedes consultar tus propias peticiones de soporte." });
-            }
 
             var peticiones = new List<object>();
             using (var command = _context.Database.GetDbConnection().CreateCommand())
             {
                 command.CommandText = "SELECT id_peticion, tipo_peticion, descripcion, estatus, fecha_solicitud, respuesta, leido FROM Peticiones_Soporte WHERE username_solicitante = @username ORDER BY fecha_solicitud DESC";
-
                 var paramUsername = command.CreateParameter();
                 paramUsername.ParameterName = "@username";
                 paramUsername.Value = username;
@@ -102,44 +100,79 @@ namespace RegistroCivilAPI.Controllers
             return Ok(peticiones);
         }
 
-        // =======================================================
-        // BLINDAJE CON reCAPTCHA APLICADO AQUÍ
-        // =======================================================
         [HttpPost]
         [AllowAnonymous]
         public async Task<ActionResult> CreatePeticion([FromQuery] string captchaToken, [FromBody] NuevaPeticionDTO dto)
         {
             if (string.IsNullOrEmpty(captchaToken))
-            {
                 return BadRequest(new { mensaje = "Falta el token de seguridad reCAPTCHA." });
-            }
 
-            // ¡EL FIX ESTÁ AQUÍ! 
-            // Ahora coincide exactamente con el nombre de tu secrets.json (RecaptchaSettings)
+            if (dto == null || string.IsNullOrWhiteSpace(dto.Username) || string.IsNullOrWhiteSpace(dto.Tipo))
+                return BadRequest(new { mensaje = "Faltan datos para registrar la solicitud." });
+
             var secretKey = _config["RecaptchaSettings:SecretKey"];
-
             var client = _httpClientFactory.CreateClient();
             var response = await client.PostAsync($"https://www.google.com/recaptcha/api/siteverify?secret={secretKey}&response={captchaToken}", null);
 
             var jsonString = await response.Content.ReadAsStringAsync();
-            if (!jsonString.Contains("\"success\": true"))
-            {
+            using var captchaDocument = JsonDocument.Parse(jsonString);
+            if (!captchaDocument.RootElement.TryGetProperty("success", out var captchaSuccess) || captchaSuccess.ValueKind != JsonValueKind.True)
                 return BadRequest(new { mensaje = "Validación reCAPTCHA fallida. Bot detectado." });
+
+            string username = dto.Username.Trim();
+            string tipo = dto.Tipo.Trim();
+            DateTime horaMexico = DateTime.UtcNow.AddHours(-6);
+
+            if (string.Equals(tipo, "RECUPERAR CONTRASEÑA", StringComparison.OrdinalIgnoreCase))
+            {
+                const string mensajeRecuperacion = "Si la cuenta corresponde a un usuario registrado, la solicitud se enviará para revisión. Si no existe, no se generará un ticket.";
+                bool usuarioExiste = await _context.UsuariosInternos.AnyAsync(u => u.Username == username);
+
+                if (!usuarioExiste)
+                    return Ok(new { mensaje = mensajeRecuperacion });
+
+                await _context.Database.ExecuteSqlRawAsync(
+                    "INSERT INTO Peticiones_Soporte (username_solicitante, tipo_peticion, descripcion, fecha_solicitud) " +
+                    "SELECT {0}, {1}, {2}, {3} WHERE NOT EXISTS (" +
+                    "SELECT 1 FROM Peticiones_Soporte WHERE username_solicitante = {0} AND tipo_peticion = {1} AND estatus = 'PENDIENTE')",
+                    username, tipo, string.IsNullOrWhiteSpace(dto.Descripcion) ? "Solicitud de recuperación de contraseña." : dto.Descripcion.Trim(), horaMexico);
+
+                return Ok(new { mensaje = mensajeRecuperacion });
             }
 
             await _context.Database.ExecuteSqlRawAsync(
-                "INSERT INTO Peticiones_Soporte (username_solicitante, tipo_peticion, descripcion) VALUES ({0}, {1}, {2})",
-                dto.Username, dto.Tipo, dto.Descripcion);
+                "INSERT INTO Peticiones_Soporte (username_solicitante, tipo_peticion, descripcion, fecha_solicitud) VALUES ({0}, {1}, {2}, {3})",
+                username, tipo, dto.Descripcion?.Trim() ?? string.Empty, horaMexico);
 
             return Ok(new { mensaje = "Tu solicitud ha sido enviada al departamento de Sistemas. Pronto será atendida." });
         }
+
         [HttpPut("{id}/resolver")]
         [Authorize(Roles = "Super Administrador")]
         public async Task<ActionResult> ResolverPeticion(int id, [FromBody] RespuestaDTO dto)
         {
-            // Si viene NuevaPassword, aplicamos el reseteo al usuario solicitante
-            // en el mismo paso, para no depender de que el admin lo haga
-            // manualmente después en otra pantalla.
+            if (dto == null)
+                return BadRequest(new { mensaje = "La respuesta de la petición es obligatoria." });
+
+            // PREVENCIÓN DEL ERROR 500: Asegurar que nunca sea NULL
+            string respuestaSegura = string.IsNullOrWhiteSpace(dto.Respuesta) ? "Petición resuelta por Administración." : dto.Respuesta;
+            if (respuestaSegura.Length > 500)
+                return BadRequest(new { mensaje = "La respuesta no puede superar los 500 caracteres." });
+
+            object peticionExiste;
+            using (var cmdExiste = _context.Database.GetDbConnection().CreateCommand())
+            {
+                cmdExiste.CommandText = "SELECT COUNT(1) FROM Peticiones_Soporte WHERE id_peticion = @id";
+                var parametroId = cmdExiste.CreateParameter();
+                parametroId.ParameterName = "@id";
+                parametroId.Value = id;
+                cmdExiste.Parameters.Add(parametroId);
+                await _context.Database.OpenConnectionAsync();
+                peticionExiste = await cmdExiste.ExecuteScalarAsync();
+            }
+            if (Convert.ToInt32(peticionExiste) == 0)
+                return NotFound(new { mensaje = "Petición no encontrada." });
+
             if (!string.IsNullOrWhiteSpace(dto.NuevaPassword))
             {
                 string username = null;
@@ -164,9 +197,17 @@ namespace RegistroCivilAPI.Controllers
                 await _context.SaveChangesAsync();
             }
 
-            await _context.Database.ExecuteSqlRawAsync(
-                "UPDATE Peticiones_Soporte SET estatus = 'RESUELTA', respuesta = {0}, leido = 0 WHERE id_peticion = {1}",
-                dto.Respuesta, id);
+            try
+            {
+                await _context.Database.ExecuteSqlRawAsync(
+                    "UPDATE Peticiones_Soporte SET estatus = 'RESUELTA', respuesta = {0}, leido = 0 WHERE id_peticion = {1}",
+                    respuestaSegura, id);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error al resolver la petición de soporte {IdPeticion}.", id);
+                return StatusCode(500, new { mensaje = "No se pudo resolver la petición por un error interno. Revisa los registros del servidor." });
+            }
 
             return Ok(new { mensaje = dto.NuevaPassword != null ? "Contraseña restablecida y petición resuelta." : "Petición marcada como resuelta y mensaje enviado al usuario." });
         }
@@ -183,14 +224,11 @@ namespace RegistroCivilAPI.Controllers
         [Authorize]
         public async Task<ActionResult> MarcarLeidasUsuario(string username)
         {
-
-            var tokenUsername = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+            var tokenUsername = User.FindFirst(ClaimTypes.Name)?.Value;
             var userRole = User.FindFirst(ClaimTypes.Role)?.Value;
 
             if (userRole != "Super Administrador" && !string.Equals(tokenUsername, username, StringComparison.OrdinalIgnoreCase))
-            {
                 return StatusCode(403, new { mensaje = "Acceso denegado. No tienes permisos para alterar este registro." });
-            }
 
             await _context.Database.ExecuteSqlRawAsync("UPDATE Peticiones_Soporte SET leido = 1 WHERE username_solicitante = {0} AND estatus = 'RESUELTA'", username);
             return Ok();
@@ -198,5 +236,9 @@ namespace RegistroCivilAPI.Controllers
     }
 
     public class NuevaPeticionDTO { public string Username { get; set; } public string Tipo { get; set; } public string Descripcion { get; set; } }
-    public class RespuestaDTO { public string Respuesta { get; set; } public string NuevaPassword { get; set; } }
+    public class RespuestaDTO
+    {
+        public string Respuesta { get; set; } = string.Empty;
+        public string? NuevaPassword { get; set; }
+    }
 }

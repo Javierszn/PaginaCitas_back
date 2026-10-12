@@ -7,6 +7,7 @@ using System.Threading.Tasks;
 using Microsoft.AspNetCore.Authorization;
 using System.ComponentModel.DataAnnotations;
 using System;
+using System.Security.Claims;
 
 namespace RegistroCivilAPI.Controllers
 {
@@ -127,6 +128,22 @@ namespace RegistroCivilAPI.Controllers
         [Authorize(Roles = "Super Administrador")]
         public async Task<ActionResult> GetAccesos([FromQuery] int page = 1, [FromQuery] int pageSize = 10, [FromQuery] string? fecha = null, [FromQuery] string? busqueda = null)
         {
+            DateTime horaMexico = DateTime.UtcNow.AddHours(-6);
+            await _context.Database.ExecuteSqlRawAsync(
+                "UPDATE Registro_Accesos SET fecha_logout = {0} WHERE fecha_logout IS NULL AND fecha_login <= {1}",
+                horaMexico, horaMexico.AddHours(-8));
+
+            await _context.Database.ExecuteSqlRawAsync(
+                ";WITH SesionesAbiertas AS (" +
+                "SELECT id_acceso, username, fecha_login, ROW_NUMBER() OVER (PARTITION BY username ORDER BY fecha_login DESC, id_acceso DESC) AS numero " +
+                "FROM Registro_Accesos WHERE fecha_logout IS NULL) " +
+                "UPDATE anterior SET fecha_logout = COALESCE(ultima.fecha_login, {0}) " +
+                "FROM Registro_Accesos anterior " +
+                "INNER JOIN SesionesAbiertas vieja ON vieja.id_acceso = anterior.id_acceso " +
+                "INNER JOIN SesionesAbiertas ultima ON ultima.username = vieja.username AND ultima.numero = 1 " +
+                "WHERE vieja.numero > 1",
+                horaMexico);
+
             var query = _context.RegistroAccesos.AsQueryable();
 
             if (!string.IsNullOrWhiteSpace(busqueda))
@@ -161,7 +178,7 @@ namespace RegistroCivilAPI.Controllers
             if (acceso == null) return NotFound(new { mensaje = "Registro no encontrado." });
             if (acceso.FechaLogout != null) return BadRequest(new { mensaje = "La sesión ya se encontraba cerrada." });
 
-            acceso.FechaLogout = DateTime.Now;
+            acceso.FechaLogout = DateTime.UtcNow.AddHours(-6);
             await _context.SaveChangesAsync();
             return Ok(new { mensaje = "Sesión cerrada remotamente de forma exitosa." });
         }
@@ -170,15 +187,15 @@ namespace RegistroCivilAPI.Controllers
         [Authorize]
         public async Task<ActionResult> VerificarEstadoSesionUsuario(string username)
         {
-            var ultimoAcceso = await _context.RegistroAccesos
-                .Where(a => a.Username == username)
-                .OrderByDescending(a => a.FechaLogin)
-                .FirstOrDefaultAsync();
-
-            if (ultimoAcceso == null || ultimoAcceso.FechaLogout != null)
+            var usernameToken = User.FindFirst(ClaimTypes.Name)?.Value;
+            var accesoClaim = User.FindFirst("AccesoId")?.Value;
+            if (!string.Equals(usernameToken, username, StringComparison.OrdinalIgnoreCase) || !int.TryParse(accesoClaim, out int idAcceso))
                 return Ok(new { activa = false });
 
-            return Ok(new { activa = true });
+            var acceso = await _context.RegistroAccesos
+                .FirstOrDefaultAsync(a => a.IdAcceso == idAcceso && a.Username == usernameToken);
+
+            return Ok(new { activa = acceso != null && acceso.FechaLogout == null });
         }
     }
 
