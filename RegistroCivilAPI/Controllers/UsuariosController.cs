@@ -1,4 +1,4 @@
-﻿using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using RegistroCivilAPI.Models;
 using System.Collections.Generic;
@@ -8,6 +8,7 @@ using Microsoft.AspNetCore.Authorization;
 using System.ComponentModel.DataAnnotations;
 using System;
 using System.Security.Claims;
+using RegistroCivilAPI.Services;
 
 namespace RegistroCivilAPI.Controllers
 {
@@ -41,12 +42,25 @@ namespace RegistroCivilAPI.Controllers
                 }).ToListAsync();
         }
 
+[HttpGet("Roles")]
+        [Authorize(Roles = "Super Administrador")]
+        public async Task<ActionResult> GetRoles()
+        {
+            var roles = await _context.Roles.OrderBy(r => r.IdRol)
+                .Select(r => new { idRol = r.IdRol, nombreRol = r.NombreRol })
+                .ToListAsync();
+            return Ok(roles);
+        }
+
         [HttpPost]
         [Authorize(Roles = "Super Administrador")]
         public async Task<ActionResult> CrearUsuario([FromBody] NuevoUsuarioDTO dto)
         {
             if (await _context.UsuariosInternos.AnyAsync(u => u.Username == dto.Username))
                 return BadRequest(new { mensaje = "El nombre de usuario ya existe." });
+
+            if (!await _context.Roles.AnyAsync(r => r.IdRol == dto.IdRol))
+                return BadRequest(new { mensaje = "El rol seleccionado no existe." });
 
             var usr = new UsuariosInterno
             {
@@ -60,6 +74,7 @@ namespace RegistroCivilAPI.Controllers
             };
 
             _context.UsuariosInternos.Add(usr);
+            _context.BitacoraAuditoria.Add(BitacoraHelper.Crear(User, "Usuarios_Internos", "INSERT", dto.Username, null, $"Usuario creado; nombre: {dto.NombreCompleto}; rol: {dto.IdRol}; sede: {dto.IdSede}"));
             await _context.SaveChangesAsync();
 
             return Ok(new { mensaje = "Usuario creado exitosamente." });
@@ -72,7 +87,9 @@ namespace RegistroCivilAPI.Controllers
             var usr = await _context.UsuariosInternos.FindAsync(id);
             if (usr == null) return NotFound();
 
+            var estadoAnterior = usr.Activo;
             usr.Activo = !usr.Activo;
+            _context.BitacoraAuditoria.Add(BitacoraHelper.Crear(User, "Usuarios_Internos", "UPDATE", id.ToString(), $"Activo: {estadoAnterior}", $"Activo: {usr.Activo}"));
             await _context.SaveChangesAsync();
             return Ok();
         }
@@ -98,6 +115,7 @@ namespace RegistroCivilAPI.Controllers
 
             usr.PasswordHash = BCrypt.Net.BCrypt.HashPassword(dto.Password);
             usr.RequiereCambioPassword = false;
+            _context.BitacoraAuditoria.Add(BitacoraHelper.Crear(User, "Usuarios_Internos", "PASSWORD", id.ToString(), null, "Contraseña actualizada; valor secreto omitido."));
 
             await _context.SaveChangesAsync();
             return Ok(new { mensaje = "Contraseña actualizada correctamente." });
@@ -110,7 +128,9 @@ namespace RegistroCivilAPI.Controllers
             var usr = await _context.UsuariosInternos.FindAsync(id);
             if (usr == null) return NotFound();
 
+            var sedeAnterior = usr.IdSede;
             usr.IdSede = dto.IdSede;
+            _context.BitacoraAuditoria.Add(BitacoraHelper.Crear(User, "Usuarios_Internos", "UPDATE", id.ToString(), $"Sede: {sedeAnterior}", $"Sede: {usr.IdSede}"));
             await _context.SaveChangesAsync();
             return Ok(new { mensaje = "Sede actualizada." });
         }
@@ -179,6 +199,7 @@ namespace RegistroCivilAPI.Controllers
             if (acceso.FechaLogout != null) return BadRequest(new { mensaje = "La sesión ya se encontraba cerrada." });
 
             acceso.FechaLogout = DateTime.UtcNow.AddHours(-6);
+            _context.BitacoraAuditoria.Add(BitacoraHelper.Crear(User, "Registro_Accesos", "UPDATE", idAcceso.ToString(), "Sesión abierta", "Sesión cerrada remotamente"));
             await _context.SaveChangesAsync();
             return Ok(new { mensaje = "Sesión cerrada remotamente de forma exitosa." });
         }
@@ -229,3 +250,4 @@ namespace RegistroCivilAPI.Controllers
         public int IdSede { get; set; }
     }
 }
+

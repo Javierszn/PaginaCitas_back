@@ -18,7 +18,9 @@ var builder = WebApplication.CreateBuilder(args);
 // ====================================================================
 // CRÍTICO PARA LAN: Escuchar en todas las computadoras de la red local
 // ====================================================================
-builder.WebHost.UseUrls("http://0.0.0.0:5000");
+builder.WebHost.UseUrls(builder.Environment.IsDevelopment()
+    ? "http://localhost:5076"
+    : "http://0.0.0.0:5000");
 
 builder.Services.AddRateLimiter(options =>
 {
@@ -30,6 +32,17 @@ builder.Services.AddRateLimiter(options =>
                 AutoReplenishment = true,
                 PermitLimit = 100,
                 Window = TimeSpan.FromMinutes(1)
+            }));
+
+    options.AddPolicy("Login", httpContext =>
+        RateLimitPartition.GetFixedWindowLimiter(
+            partitionKey: httpContext.Connection.RemoteIpAddress?.ToString() ?? "Local",
+            factory: _ => new FixedWindowRateLimiterOptions
+            {
+                AutoReplenishment = true,
+                PermitLimit = 10,
+                Window = TimeSpan.FromMinutes(1),
+                QueueLimit = 0
             }));
     options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
 });
@@ -94,6 +107,7 @@ app.UseExceptionHandler(errorApp =>
     });
 });
 
+app.UseRouting();
 app.UseCors("PermitirTodo");
 app.UseRateLimiter();
 app.UseAuthentication();

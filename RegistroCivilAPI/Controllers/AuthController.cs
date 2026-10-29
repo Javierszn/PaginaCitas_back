@@ -1,5 +1,6 @@
 ﻿using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.IdentityModel.Tokens;
@@ -28,6 +29,7 @@ namespace RegistroCivilAPI.Controllers
         }
 
         [HttpPost("login")]
+        [EnableRateLimiting("Login")]
         public async Task<ActionResult> Login([FromBody] LoginDTO dto)
         {
             var user = await _context.UsuariosInternos.Include(u => u.IdRolNavigation).Include(u => u.IdSedeNavigation)
@@ -166,6 +168,7 @@ namespace RegistroCivilAPI.Controllers
                 new Claim(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString()),
                 new Claim(ClaimTypes.Name, user.Username),
                 new Claim(ClaimTypes.NameIdentifier, user.IdUsuario.ToString()),
+                new Claim("id_usuario", user.IdUsuario.ToString()),
                 new Claim("AccesoId", idAcceso.ToString()),
                 new Claim(ClaimTypes.Role, user.IdRolNavigation.NombreRol),
                 new Claim("SedeId", user.IdSede.ToString())

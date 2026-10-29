@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Net.Http;
@@ -118,6 +118,10 @@ namespace RegistroCivilAPI.Controllers
             if (!await ValidarReCaptcha(solicitud.CaptchaToken))
                 return BadRequest(new { mensaje = "Verificación de seguridad fallida. Por favor, complete el Captcha." });
 
+            DateTime horaMexicoActual = DateTime.UtcNow.AddHours(-6);
+            if (solicitud.FechaHora <= horaMexicoActual)
+                return BadRequest(new { mensaje = "La fecha y hora seleccionadas ya pasaron. Seleccione un horario futuro." });
+
             if (string.IsNullOrWhiteSpace(solicitud.Correo) || !System.Net.Mail.MailAddress.TryCreate(solicitud.Correo.Trim(), out _))
                 return BadRequest(new { mensaje = "Escribe un correo electrónico válido para recibir la confirmación de la cita." });
 
@@ -129,34 +133,83 @@ namespace RegistroCivilAPI.Controllers
 
             try
             {
-                Ciudadano ciudadano = null;
-                string curpBuscado = string.IsNullOrWhiteSpace(solicitud.Curp) ? null : solicitud.Curp.Trim().ToUpper();
-                string nombreBuscado = string.IsNullOrWhiteSpace(solicitud.Nombre) ? null : solicitud.Nombre.Trim().ToUpper();
-                string telLimpio = solicitud.Telefono?.Trim();
+                string curpBuscado = string.IsNullOrWhiteSpace(solicitud.Curp) ? null : solicitud.Curp.Trim().ToUpperInvariant();
+                string nombreBuscado = string.IsNullOrWhiteSpace(solicitud.Nombre) ? null : solicitud.Nombre.Trim();
+                string telLimpio = new string((solicitud.Telefono ?? string.Empty).Where(char.IsDigit).ToArray());
 
-                if (!string.IsNullOrWhiteSpace(nombreBuscado))
+                if (string.IsNullOrWhiteSpace(telLimpio) || telLimpio.Length < 8 || telLimpio.Length > 15)
+                    return BadRequest(new { mensaje = "El teléfono es obligatorio e incluye la lada del país. Capture un número válido de 8 a 15 dígitos." });
+
+                if (string.IsNullOrWhiteSpace(curpBuscado) && string.IsNullOrWhiteSpace(nombreBuscado))
+                    return BadRequest(new { mensaje = "Debe proporcionar la CURP o el nombre completo para identificar a la persona." });
+
+                var telefonosCoincidentes = new List<string> { telLimpio };
+                if (telLimpio.StartsWith("52", StringComparison.Ordinal) && telLimpio.Length == 12)
+                    telefonosCoincidentes.Add(telLimpio.Substring(2)); // Compatibilidad con teléfonos mexicanos guardados antes sin lada.
+
+                var propietariosTelefono = await _context.Ciudadanos
+                    .Where(c => telefonosCoincidentes.Contains(c.Telefono))
+                    .ToListAsync();
+                var idsPropietariosTelefono = propietariosTelefono
+                    .Select(c => c.IdCiudadano)
+                    .Distinct()
+                    .ToArray();
+
+                if (idsPropietariosTelefono.Length > 1)
+                    return BadRequest(new { mensaje = "Este teléfono ya está asociado con otra persona y no se puede usar para agendar otra cita." });
+
+                Ciudadano ciudadano = null;
+                if (!string.IsNullOrWhiteSpace(curpBuscado))
+                    ciudadano = await _context.Ciudadanos.FirstOrDefaultAsync(c => c.Curp == curpBuscado);
+
+                var propietarioTelefono = propietariosTelefono.FirstOrDefault();
+                if (ciudadano != null && propietarioTelefono != null && ciudadano.IdCiudadano != propietarioTelefono.IdCiudadano)
+                    return BadRequest(new { mensaje = "Este teléfono ya está ligado a otra CURP y no puede utilizarse para esta persona." });
+
+                if (ciudadano == null && propietarioTelefono != null)
                 {
-                    var usuarioConMismoTel = await _context.Ciudadanos.FirstOrDefaultAsync(c => c.Telefono == telLimpio);
-                    if (usuarioConMismoTel != null && usuarioConMismoTel.Nombre.ToUpper() != nombreBuscado)
+                    if (string.IsNullOrWhiteSpace(curpBuscado))
                     {
-                        return BadRequest(new { mensaje = "Alerta de Seguridad: Este número de teléfono ya está registrado a nombre de otra persona." });
+                        if (!NombreCoincide(propietarioTelefono, nombreBuscado))
+                            return BadRequest(new { mensaje = "Este teléfono ya está ligado a otra persona. Use el teléfono registrado para esta persona." });
+
+                        ciudadano = propietarioTelefono;
+                    }
+                    else if (propietarioTelefono.Curp != null &&
+                             propietarioTelefono.Curp.StartsWith("ENM", StringComparison.OrdinalIgnoreCase) &&
+                             !string.IsNullOrWhiteSpace(nombreBuscado) &&
+                             NombreCoincide(propietarioTelefono, nombreBuscado))
+                    {
+                        // Si antes reservó sin CURP, asociar ese registro sintético con la CURP capturada ahora.
+                        propietarioTelefono.Curp = curpBuscado;
+                        ciudadano = propietarioTelefono;
+                    }
+                    else
+                    {
+                        return BadRequest(new { mensaje = "Este teléfono ya está ligado a otra persona o CURP y no puede reutilizarse." });
                     }
                 }
-
-                if (!string.IsNullOrWhiteSpace(curpBuscado))
+                else if (ciudadano == null && propietarioTelefono == null && string.IsNullOrWhiteSpace(curpBuscado) && !string.IsNullOrWhiteSpace(nombreBuscado))
                 {
-                    ciudadano = await _context.Ciudadanos.FirstOrDefaultAsync(c => c.Curp == curpBuscado);
-                }
+                    var tokensNombre = nombreBuscado.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                    var candidatosNombre = await _context.Ciudadanos
+                        .Where(c => c.Nombre.ToUpper() == tokensNombre[0].ToUpper())
+                        .ToListAsync();
+                    var coincidenciasNombre = candidatosNombre
+                        .Where(c => NombreCoincide(c, nombreBuscado))
+                        .ToList();
 
-                if (ciudadano == null && !string.IsNullOrWhiteSpace(nombreBuscado))
-                {
-                    ciudadano = await _context.Ciudadanos.FirstOrDefaultAsync(c => c.Nombre.ToUpper() == nombreBuscado && c.Telefono == telLimpio);
+                    if (coincidenciasNombre.Count > 1)
+                        return BadRequest(new { mensaje = "Hay más de un registro con ese nombre. Capture la CURP para identificar a la persona antes de cambiar el teléfono." });
+
+                    if (coincidenciasNombre.Count == 1)
+                        ciudadano = coincidenciasNombre[0];
                 }
 
                 if (ciudadano == null)
                 {
-                    string curpFinal = curpBuscado ?? "ENM" + Guid.NewGuid().ToString("N").Substring(0, 15).ToUpper();
-                    string nombreSeguro = string.IsNullOrWhiteSpace(solicitud.Nombre) ? "" : solicitud.Nombre.Trim();
+                    string curpFinal = curpBuscado ?? "ENM" + Guid.NewGuid().ToString("N").Substring(0, 15).ToUpperInvariant();
+                    string nombreSeguro = nombreBuscado ?? string.Empty;
                     var partesNombre = nombreSeguro.Split(' ', StringSplitOptions.RemoveEmptyEntries);
 
                     string origenRegistro = string.IsNullOrWhiteSpace(solicitud.EstadoRegistro) ? solicitud.MunicipioRegistro : $"{solicitud.EstadoRegistro} - {solicitud.MunicipioRegistro}";
@@ -170,11 +223,16 @@ namespace RegistroCivilAPI.Controllers
                         PrimerApellido = partesNombre.Length > 1 ? partesNombre[1].Substring(0, Math.Min(partesNombre[1].Length, 50)) : "",
                         SegundoApellido = partesNombre.Length > 2 ? string.Join(" ", partesNombre.Skip(2)).Substring(0, Math.Min(string.Join(" ", partesNombre.Skip(2)).Length, 50)) : "",
                         Correo = solicitud.Correo?.Trim().Substring(0, Math.Min(solicitud.Correo.Trim().Length, 100)),
-                        Telefono = telLimpio.Substring(0, Math.Min(telLimpio.Length, 15)),
+                        Telefono = telLimpio,
                         OrigenRegistro = origenRegistro
                     };
                     _context.Ciudadanos.Add(ciudadano);
                     await _context.SaveChangesAsync();
+                    idsPropietariosTelefono = new[] { ciudadano.IdCiudadano };
+                }
+                else
+                {
+                    ciudadano.Telefono = telLimpio;
                 }
 
                 DateTime limiteCastigo = DateTime.UtcNow.AddHours(-6).AddDays(-7);
@@ -185,13 +243,12 @@ namespace RegistroCivilAPI.Controllers
                 }
 
                 var citaMismoTramite = await _context.Citas.AnyAsync(c =>
-                    c.IdCiudadano == ciudadano.IdCiudadano &&
+                    (c.IdCiudadano == ciudadano.IdCiudadano || idsPropietariosTelefono.Contains(c.IdCiudadano)) &&
                     c.IdTramite == solicitud.IdTramite &&
                     c.FechaHoraInicio.Date == solicitud.FechaHora.Date &&
                     (c.Estatus == "PROGRAMADA" || c.Estatus == "CONFIRMADA" || c.Estatus == "REPROGRAMADA"));
 
-                if (citaMismoTramite) return BadRequest(new { mensaje = "Alerta: Usted ya tiene una cita programada para este trámite exacto en este día." });
-
+                if (citaMismoTramite) return BadRequest(new { mensaje = "Alerta: Este teléfono ya tiene una cita pendiente para este trámite en este día, incluso si se realiza en otra sede." });
                 var tramiteEntity = await _context.Tramites.FindAsync(solicitud.IdTramite);
                 if (tramiteEntity == null) return BadRequest(new { mensaje = "Trámite no encontrado." });
 
@@ -287,12 +344,18 @@ namespace RegistroCivilAPI.Controllers
         [HttpPut("{folio}/cancelar")]
         public async Task<ActionResult> CancelarCita(string folio)
         {
-            var cita = await _context.Citas.FirstOrDefaultAsync(c => c.IdCita == folio);
+            var cita = await _context.Citas
+                .Include(c => c.IdCiudadanoNavigation)
+                .Include(c => c.IdTramiteNavigation)
+                .Include(c => c.IdSedeNavigation)
+                .FirstOrDefaultAsync(c => c.IdCita == folio);
             if (cita == null) return NotFound(new { mensaje = "Cita no encontrada." });
             if (cita.Estatus == "CANCELADA") return BadRequest(new { mensaje = "La cita ya se encuentra cancelada." });
 
             DateTime horaMexico = DateTime.UtcNow.AddHours(-6);
             if (cita.FechaHoraInicio < horaMexico) return BadRequest(new { mensaje = "No se puede cancelar una cita de una fecha que ya pasó." });
+            if (cita.FechaHoraInicio - horaMexico < TimeSpan.FromHours(2))
+                return BadRequest(new { mensaje = "Solo se puede cancelar una cita con al menos 2 horas de anticipación." });
 
             cita.Estatus = "CANCELADA";
 
@@ -304,6 +367,16 @@ namespace RegistroCivilAPI.Controllers
             {
                 return StatusCode(StatusCodes.Status409Conflict, new { mensaje = "Alerta de Concurrencia: Otro empleado acaba de modificar el estatus de esta cita." });
             }
+
+            string nombreCompleto = $"{cita.IdCiudadanoNavigation.Nombre} {cita.IdCiudadanoNavigation.PrimerApellido} {cita.IdCiudadanoNavigation.SegundoApellido}".Trim();
+            string identificadorParaCorreo = !string.IsNullOrWhiteSpace(nombreCompleto) ? nombreCompleto : $"CURP: {cita.IdCiudadanoNavigation.Curp}";
+            await _emailService.EnviarCorreoCancelacionAsync(
+                cita.IdCiudadanoNavigation.Correo,
+                identificadorParaCorreo,
+                cita.IdCita,
+                cita.FechaHoraInicio,
+                cita.IdTramiteNavigation.NombreTramite,
+                cita.IdSedeNavigation.Nombre);
 
             return Ok(new { mensaje = "Su cita ha sido cancelada con éxito. El espacio ha sido liberado." });
         }
@@ -320,6 +393,14 @@ namespace RegistroCivilAPI.Controllers
             if (cita == null) return NotFound(new { mensaje = "Cita no encontrada." });
             if (cita.Estatus == "CANCELADA" || cita.Estatus == "ATENDIDA" || cita.Estatus == "NO_ASISTIO" || cita.Estatus == "REPROGRAMADA")
                 return BadRequest(new { mensaje = "Solo se permite reprogramar la cita una vez. El estatus actual es " + cita.Estatus });
+
+            DateTime horaMexicoActual = DateTime.UtcNow.AddHours(-6);
+            if (dto.NuevaFechaHora <= horaMexicoActual)
+                return BadRequest(new { mensaje = "La fecha y hora seleccionadas ya pasaron. Seleccione un horario futuro." });
+            if (cita.FechaHoraInicio <= horaMexicoActual)
+                return BadRequest(new { mensaje = "No se puede reprogramar una cita cuya hora ya comenzó o pasó." });
+            if (cita.FechaHoraInicio - horaMexicoActual < TimeSpan.FromHours(2))
+                return BadRequest(new { mensaje = "Solo se puede reprogramar una cita con al menos 2 horas de anticipación." });
 
             int duracion = cita.IdTramiteNavigation.DuracionMinutos > 0 ? cita.IdTramiteNavigation.DuracionMinutos : 30;
             DateTime nuevaFechaFin = dto.NuevaFechaHora.AddMinutes(duracion);
@@ -367,7 +448,7 @@ namespace RegistroCivilAPI.Controllers
         }
 
         [HttpGet("PorSede/{idSede}")]
-        [Authorize]
+        [Authorize(Roles = "Super Administrador,Administrador,Ventanilla,Empleado Ventanilla,Informes")]
         public async Task<ActionResult> ObtenerCitasPorSede(int idSede, [FromQuery] string? fecha = null, [FromQuery] string? busqueda = null, [FromQuery] int pagina = 1, [FromQuery] int registrosPorPagina = 50)
         {
             var userSedeClaim = User.FindFirst("SedeId")?.Value;
@@ -427,7 +508,7 @@ namespace RegistroCivilAPI.Controllers
         }
 
         [HttpPut("{folio}/actualizarEstatus")]
-        [Authorize]
+        [Authorize(Roles = "Super Administrador,Administrador,Ventanilla,Empleado Ventanilla,Informes")]
         public async Task<ActionResult> ActualizarEstatus(string folio, [FromBody] CambioEstatusDTO dto)
         {
             var cita = await _context.Citas.FirstOrDefaultAsync(c => c.IdCita == folio);
@@ -438,6 +519,9 @@ namespace RegistroCivilAPI.Controllers
             var userRole = User.FindFirst(ClaimTypes.Role)?.Value;
 
             if (string.IsNullOrEmpty(usernameClaim)) return Unauthorized(new { mensaje = "Token inválido." });
+            if (userRole == "Dirección") return Forbid();
+            if (userRole == "Informes" && !string.Equals(dto.NuevoEstatus, "CONFIRMADA", StringComparison.OrdinalIgnoreCase))
+                return StatusCode(403, new { mensaje = "El rol Informes solo puede confirmar citas." });
             if (userRole != "Super Administrador" && userSedeClaim != cita.IdSede.ToString()) return StatusCode(403, new { mensaje = "Acceso denegado. Esta cita pertenece a otra sede." });
 
             var usuarioReal = await _context.UsuariosInternos.FirstOrDefaultAsync(u => u.Username == usernameClaim);
@@ -471,6 +555,24 @@ namespace RegistroCivilAPI.Controllers
             return Ok(new { mensaje = $"La cita se ha marcado como {dto.NuevoEstatus} correctamente." });
         }
 
+        private static bool NombreCoincide(Ciudadano ciudadano, string nombreCapturado)
+        {
+            if (ciudadano == null || string.IsNullOrWhiteSpace(nombreCapturado)) return false;
+
+            static string Normalizar(string valor)
+            {
+                string descompuesto = valor.Normalize(System.Text.NormalizationForm.FormD);
+                var caracteres = descompuesto
+                    .Where(c => System.Globalization.CharUnicodeInfo.GetUnicodeCategory(c) != System.Globalization.UnicodeCategory.NonSpacingMark)
+                    .ToArray();
+                return string.Join(" ", new string(caracteres).Normalize(System.Text.NormalizationForm.FormC)
+                    .ToUpperInvariant()
+                    .Split(' ', StringSplitOptions.RemoveEmptyEntries));
+            }
+
+            string nombreRegistrado = $"{ciudadano.Nombre} {ciudadano.PrimerApellido} {ciudadano.SegundoApellido}";
+            return Normalizar(nombreRegistrado) == Normalizar(nombreCapturado);
+        }
         private async Task<bool> ValidarReCaptcha(string token)
         {
             if (string.IsNullOrEmpty(token)) return false;
@@ -503,3 +605,4 @@ namespace RegistroCivilAPI.Controllers
         public string CaptchaToken { get; set; }
     }
 }
+

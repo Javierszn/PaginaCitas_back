@@ -23,6 +23,14 @@ namespace RegistroCivilAPI.Services
             string sede,
             string? requisitos,
             bool esReagendada = false);
+
+        Task EnviarCorreoCancelacionAsync(
+            string? correoDestino,
+            string identificador,
+            string folio,
+            DateTime fechaHora,
+            string tramite,
+            string sede);
     }
 
     public class EmailService : IEmailService
@@ -171,6 +179,79 @@ namespace RegistroCivilAPI.Services
             catch (Exception ex)
             {
                 _logger?.LogError(ex, "Error inesperado al enviar el correo por API de Brevo.");
+            }
+        }
+
+        public async Task EnviarCorreoCancelacionAsync(
+            string? correoDestino,
+            string identificador,
+            string folio,
+            DateTime fechaHora,
+            string tramite,
+            string sede)
+        {
+            if (string.IsNullOrWhiteSpace(correoDestino))
+            {
+                _logger?.LogWarning("No se envió el correo de cancelación: el correo destinatario está vacío.");
+                return;
+            }
+
+            string apiKey = _config["EmailSettings:ApiKey"] ?? _config["EmailSettings:PasswordApp"] ?? string.Empty;
+            string correoOrigen = _config["EmailSettings:Correo"] ?? string.Empty;
+            if (string.IsNullOrWhiteSpace(apiKey) || string.IsNullOrWhiteSpace(correoOrigen))
+            {
+                _logger?.LogError("No se envió el correo de cancelación: falta configurar EmailSettings:ApiKey o EmailSettings:Correo.");
+                return;
+            }
+
+            try
+            {
+                DateTime horaCitaMexico = fechaHora.Kind == DateTimeKind.Utc ? fechaHora.AddHours(-6) : fechaHora;
+                string identificadorHtml = WebUtility.HtmlEncode(identificador);
+                string folioHtml = WebUtility.HtmlEncode(folio);
+                string tramiteHtml = WebUtility.HtmlEncode(tramite);
+                string sedeHtml = WebUtility.HtmlEncode(sede);
+                string fechaHtml = WebUtility.HtmlEncode(horaCitaMexico.ToString("dd/MM/yyyy HH:mm"));
+                string mensajeHtml = $@"
+                <div style='font-family: Arial, sans-serif; color: #333; max-width: 600px; margin: 0 auto; border: 1px solid #ddd; border-radius: 8px; padding: 30px 20px;'>
+                    <h2 style='color: #055A1C; text-align: center;'>Cita cancelada</h2>
+                    <p>Estimado/a <b>{identificadorHtml}</b>,</p>
+                    <p>Le confirmamos que su cita fue cancelada y el horario quedó liberado.</p>
+                    <div style='background-color: #f9f9f9; padding: 20px; border-left: 5px solid #055A1C;'>
+                        <p><b>Folio:</b> {folioHtml}</p>
+                        <p><b>Trámite:</b> {tramiteHtml}</p>
+                        <p><b>Fecha y hora:</b> {fechaHtml} hrs</p>
+                        <p><b>Sede:</b> {sedeHtml}</p>
+                    </div>
+                    <p>Si necesita realizar el trámite, puede solicitar una nueva cita desde el portal.</p>
+                </div>";
+
+                using var request = new HttpRequestMessage(HttpMethod.Post, "https://api.brevo.com/v3/smtp/email");
+                request.Headers.Add("api-key", apiKey);
+                var payload = new
+                {
+                    sender = new { name = "Registro Civil Citas SLP", email = correoOrigen },
+                    to = new[] { new { email = correoDestino.Trim(), name = identificador } },
+                    subject = $"Cancelación de cita - Folio: {folio}",
+                    htmlContent = mensajeHtml
+                };
+                request.Content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json");
+
+                using var httpClient = _httpClientFactory != null ? _httpClientFactory.CreateClient() : new HttpClient();
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+                using HttpResponseMessage response = await httpClient.SendAsync(request, cts.Token);
+                if (!response.IsSuccessStatusCode)
+                {
+                    string errorResponse = await response.Content.ReadAsStringAsync();
+                    _logger?.LogError("Brevo rechazó el correo de cancelación. Código: {Status}. Detalle: {Detalle}", (int)response.StatusCode, errorResponse);
+                    return;
+                }
+
+                _logger?.LogInformation("Correo de cancelación enviado exitosamente a {Destino}.", correoDestino);
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogError(ex, "Error inesperado al enviar el correo de cancelación.");
             }
         }
     }

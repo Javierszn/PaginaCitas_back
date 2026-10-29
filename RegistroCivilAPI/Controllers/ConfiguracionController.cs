@@ -1,10 +1,11 @@
-﻿using System;
+using System;
 using System.Linq;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using RegistroCivilAPI.Models;
+using RegistroCivilAPI.Services;
 
 namespace RegistroCivilAPI.Controllers
 {
@@ -33,6 +34,7 @@ namespace RegistroCivilAPI.Controllers
             }
 
             var rango = await _context.ConfiguracionAgendas.FirstOrDefaultAsync(c => c.Id == 1);
+            string valorAnterior = rango == null ? "No configurado" : $"Inicio: {rango.FechaInicio:yyyy-MM-dd}; Fin: {rango.FechaFin:yyyy-MM-dd}";
             if (rango == null)
             {
                 rango = new ConfiguracionAgenda { Id = 1, FechaInicio = dto.FechaInicio, FechaFin = dto.FechaFin };
@@ -42,6 +44,7 @@ namespace RegistroCivilAPI.Controllers
             {
                 rango.FechaInicio = dto.FechaInicio; rango.FechaFin = dto.FechaFin;
             }
+            _context.BitacoraAuditoria.Add(BitacoraHelper.Crear(User, "Configuracion_Agenda", "UPDATE", "1", valorAnterior, $"Inicio: {dto.FechaInicio:yyyy-MM-dd}; Fin: {dto.FechaFin:yyyy-MM-dd}"));
             await _context.SaveChangesAsync();
             return Ok(new { mensaje = "Rango de fechas de reservación actualizado." });
         }
@@ -51,6 +54,7 @@ namespace RegistroCivilAPI.Controllers
         {
             var nuevoDia = new DiasInhabile { FechaBloqueada = DateOnly.FromDateTime(dto.Fecha), Motivo = dto.Motivo, IdSede = null };
             _context.DiasInhabiles.Add(nuevoDia);
+            _context.BitacoraAuditoria.Add(BitacoraHelper.Crear(User, "Dias_Inhabiles", "INSERT", dto.Fecha.ToString("yyyy-MM-dd"), null, $"Motivo: {dto.Motivo}"));
             await _context.SaveChangesAsync();
             return Ok(new { mensaje = "Día inhábil registrado correctamente. El calendario ha sido bloqueado." });
         }
@@ -62,6 +66,7 @@ namespace RegistroCivilAPI.Controllers
             var dia = await _context.DiasInhabiles.FindAsync(id);
             if (dia == null) return NotFound();
             _context.DiasInhabiles.Remove(dia);
+            _context.BitacoraAuditoria.Add(BitacoraHelper.Crear(User, "Dias_Inhabiles", "DELETE", id.ToString(), $"Fecha: {dia.FechaBloqueada:yyyy-MM-dd}; Motivo: {dia.Motivo}", null));
             await _context.SaveChangesAsync();
             return Ok(new { mensaje = "Día inhábil eliminado. El día vuelve a estar disponible." });
         }

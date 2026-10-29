@@ -1,4 +1,4 @@
-﻿using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using RegistroCivilAPI.Models;
 using System;
@@ -8,6 +8,7 @@ using Microsoft.AspNetCore.Authorization;
 using System.Security.Claims;
 using System.Net.Http;
 using System.Text.Json;
+using RegistroCivilAPI.Services;
 
 namespace RegistroCivilAPI.Controllers
 {
@@ -202,6 +203,8 @@ namespace RegistroCivilAPI.Controllers
                 await _context.Database.ExecuteSqlRawAsync(
                     "UPDATE Peticiones_Soporte SET estatus = 'RESUELTA', respuesta = {0}, leido = 0 WHERE id_peticion = {1}",
                     respuestaSegura, id);
+                _context.BitacoraAuditoria.Add(BitacoraHelper.Crear(User, "Peticiones_Soporte", "UPDATE", id.ToString(), "PENDIENTE", dto.NuevaPassword != null ? "Petición resuelta; contraseña restablecida (secreto omitido)." : $"Petición resuelta: {respuestaSegura}"));
+                await _context.SaveChangesAsync();
             }
             catch (Exception ex)
             {
