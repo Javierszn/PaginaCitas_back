@@ -48,7 +48,7 @@ namespace RegistroCivilAPI.Controllers
             await _context.SaveChangesAsync();
             return Ok(new { mensaje = "Rango de fechas de reservación actualizado." });
         }
-        [Authorize(Roles = "Administrador,Super Administrador")]
+        [Authorize(Roles = "Administrador,Super Administrador,Dirección")]
         [HttpPost("DiasInhabiles")]
         public async Task<ActionResult> AddDiaInhabil([FromBody] DiaInhabilDTO dto)
         {
@@ -59,7 +59,7 @@ namespace RegistroCivilAPI.Controllers
             return Ok(new { mensaje = "Día inhábil registrado correctamente. El calendario ha sido bloqueado." });
         }
 
-        [Authorize(Roles = "Administrador,Super Administrador")]
+        [Authorize(Roles = "Administrador,Super Administrador,Dirección")]
         [HttpDelete("DiasInhabiles/{id}")]
         public async Task<ActionResult> DeleteDiaInhabil(int id)
         {
