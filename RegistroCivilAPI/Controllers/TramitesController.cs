@@ -81,7 +81,7 @@ namespace RegistroCivilAPI.Controllers
                 t.FechaFinPermitida = dto.FechaFin;       
             }
 
-            _context.BitacoraAuditoria.Add(BitacoraHelper.Crear(User, "Tramites", "UPDATE", idCategoria.ToString(), valorAnterior, $"Activo: {dto.Activo}; Duración: {dto.DuracionMinutos}; Precio: {dto.Costo}; Límite: {dto.LimiteDiario}; Desde: {dto.FechaInicio:yyyy-MM-dd}; Hasta: {dto.FechaFin:yyyy-MM-dd}"));
+            _context.BitacoraAuditoria.Add(await BitacoraHelper.CrearAsync(User, _context, "Tramites", "UPDATE", idCategoria.ToString(), valorAnterior, $"Activo: {dto.Activo}; Duración: {dto.DuracionMinutos}; Precio: {dto.Costo}; Límite: {dto.LimiteDiario}; Desde: {dto.FechaInicio:yyyy-MM-dd}; Hasta: {dto.FechaFin:yyyy-MM-dd}"));
             await _context.SaveChangesAsync();
             return Ok(new { mensaje = "Configuración aplicada exitosamente a todos los servicios de esta categoría." });
         }

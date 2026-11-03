@@ -56,11 +56,26 @@ namespace RegistroCivilAPI.Controllers
         [Authorize(Roles = "Super Administrador")]
         public async Task<ActionResult> CrearUsuario([FromBody] NuevoUsuarioDTO dto)
         {
-            if (await _context.UsuariosInternos.AnyAsync(u => u.Username == dto.Username))
+            dto.Username = dto.Username.Trim();
+            dto.NombreCompleto = dto.NombreCompleto.Trim();
+
+            if (string.IsNullOrWhiteSpace(dto.Username) || string.IsNullOrWhiteSpace(dto.NombreCompleto))
+                return BadRequest(new { mensaje = "El nombre de usuario y el nombre completo son obligatorios." });
+
+            if (await _context.UsuariosInternos.AnyAsync(u => u.Username.ToUpper() == dto.Username.ToUpper()))
                 return BadRequest(new { mensaje = "El nombre de usuario ya existe." });
 
-            if (!await _context.Roles.AnyAsync(r => r.IdRol == dto.IdRol))
+            var rol = await _context.Roles
+                .AsNoTracking()
+                .FirstOrDefaultAsync(r => r.IdRol == dto.IdRol);
+            if (rol == null)
                 return BadRequest(new { mensaje = "El rol seleccionado no existe." });
+
+            var sede = await _context.Sedes
+                .AsNoTracking()
+                .FirstOrDefaultAsync(s => s.IdSede == dto.IdSede);
+            if (sede == null)
+                return BadRequest(new { mensaje = "La sede seleccionada no existe o ya no está disponible." });
 
             var usr = new UsuariosInterno
             {
@@ -74,7 +89,8 @@ namespace RegistroCivilAPI.Controllers
             };
 
             _context.UsuariosInternos.Add(usr);
-            _context.BitacoraAuditoria.Add(BitacoraHelper.Crear(User, "Usuarios_Internos", "INSERT", dto.Username, null, $"Usuario creado; nombre: {dto.NombreCompleto}; rol: {dto.IdRol}; sede: {dto.IdSede}"));
+            var detalleCreacion = $"Usuario: {usr.Username}; nombre: {usr.NombreCompleto}; rol: {rol.NombreRol}; sede: {sede.Nombre}";
+            _context.BitacoraAuditoria.Add(await BitacoraHelper.CrearAsync(User, _context, "Usuarios_Internos", "INSERT", dto.Username, null, detalleCreacion));
             await _context.SaveChangesAsync();
 
             return Ok(new { mensaje = "Usuario creado exitosamente." });
@@ -88,8 +104,13 @@ namespace RegistroCivilAPI.Controllers
             if (usr == null) return NotFound();
 
             var estadoAnterior = usr.Activo;
-            usr.Activo = !usr.Activo;
-            _context.BitacoraAuditoria.Add(BitacoraHelper.Crear(User, "Usuarios_Internos", "UPDATE", id.ToString(), $"Activo: {estadoAnterior}", $"Activo: {usr.Activo}"));
+            usr.Activo = usr.Activo != true;
+            var cuentaActiva = usr.Activo == true;
+            var accionCuenta = cuentaActiva ? "Cuenta activada" : "Cuenta desactivada";
+            _context.BitacoraAuditoria.Add(await BitacoraHelper.CrearAsync(
+                User, _context, "Usuarios_Internos", "UPDATE", id.ToString(),
+                estadoAnterior == true ? "Cuenta activa" : "Cuenta desactivada",
+                $"{accionCuenta}; usuario: {usr.Username}; nombre: {usr.NombreCompleto}"));
             await _context.SaveChangesAsync();
             return Ok();
         }
@@ -100,11 +121,18 @@ namespace RegistroCivilAPI.Controllers
         {
             
             var esSuperAdmin = User.IsInRole("Super Administrador");
-            var idClaim = User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value;
+            var idClaim = User.Claims
+                .Where(claim => claim.Type == ClaimTypes.NameIdentifier
+                    || string.Equals(claim.Type, "nameid", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(claim.Type, "nameidentifier", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(claim.Type, "id_usuario", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(claim.Type, "IdUsuario", StringComparison.OrdinalIgnoreCase))
+                .Select(claim => int.TryParse(claim.Value, out var parsedId) ? (int?)parsedId : null)
+                .FirstOrDefault(parsedId => parsedId.HasValue);
 
             if (!esSuperAdmin)
             {
-                if (idClaim == null || !int.TryParse(idClaim, out int idAutenticado) || idAutenticado != id)
+                if (idClaim != id)
                 {
                     return Forbid();
                 }
@@ -114,11 +142,17 @@ namespace RegistroCivilAPI.Controllers
             if (usr == null) return NotFound(new { mensaje = "Usuario no encontrado." });
 
             usr.PasswordHash = BCrypt.Net.BCrypt.HashPassword(dto.Password);
-            usr.RequiereCambioPassword = false;
-            _context.BitacoraAuditoria.Add(BitacoraHelper.Crear(User, "Usuarios_Internos", "PASSWORD", id.ToString(), null, "Contraseña actualizada; valor secreto omitido."));
+            bool requiereCambioEnSiguienteIngreso = esSuperAdmin && idClaim != id;
+            usr.RequiereCambioPassword = requiereCambioEnSiguienteIngreso;
+            string detalleBitacora = requiereCambioEnSiguienteIngreso
+                ? $"Contraseña temporal restablecida para {usr.Username}; nombre: {usr.NombreCompleto}. Se solicitará una contraseña personal al ingresar."
+                : $"Contraseña personal actualizada para {usr.Username}; nombre: {usr.NombreCompleto}.";
+            _context.BitacoraAuditoria.Add(await BitacoraHelper.CrearAsync(User, _context, "Usuarios_Internos", "UPDATE", id.ToString(), null, detalleBitacora));
 
             await _context.SaveChangesAsync();
-            return Ok(new { mensaje = "Contraseña actualizada correctamente." });
+            return Ok(new { mensaje = requiereCambioEnSiguienteIngreso
+                ? "Contraseña temporal actualizada. El usuario deberá crear su contraseña personal al iniciar sesión."
+                : "Contraseña actualizada correctamente." });
         }
 
         [HttpPut("{id}/sede")]
@@ -128,9 +162,22 @@ namespace RegistroCivilAPI.Controllers
             var usr = await _context.UsuariosInternos.FindAsync(id);
             if (usr == null) return NotFound();
 
-            var sedeAnterior = usr.IdSede;
+            var sedeAnterior = await _context.Sedes
+                .AsNoTracking()
+                .FirstOrDefaultAsync(s => s.IdSede == usr.IdSede);
+            var sedeNueva = await _context.Sedes
+                .AsNoTracking()
+                .FirstOrDefaultAsync(s => s.IdSede == dto.IdSede);
+            if (sedeNueva == null)
+                return BadRequest(new { mensaje = "La sede seleccionada no existe o ya no está disponible." });
+
             usr.IdSede = dto.IdSede;
-            _context.BitacoraAuditoria.Add(BitacoraHelper.Crear(User, "Usuarios_Internos", "UPDATE", id.ToString(), $"Sede: {sedeAnterior}", $"Sede: {usr.IdSede}"));
+            var anterior = sedeAnterior?.Nombre ?? "Sin sede registrada";
+            var nuevo = sedeNueva.Nombre;
+            _context.BitacoraAuditoria.Add(await BitacoraHelper.CrearAsync(
+                User, _context, "Usuarios_Internos", "UPDATE", id.ToString(),
+                $"Usuario: {usr.Username}; nombre: {usr.NombreCompleto}; sede: {anterior}",
+                $"Usuario: {usr.Username}; nombre: {usr.NombreCompleto}; sede: {nuevo}"));
             await _context.SaveChangesAsync();
             return Ok(new { mensaje = "Sede actualizada." });
         }
@@ -199,7 +246,7 @@ namespace RegistroCivilAPI.Controllers
             if (acceso.FechaLogout != null) return BadRequest(new { mensaje = "La sesión ya se encontraba cerrada." });
 
             acceso.FechaLogout = DateTime.UtcNow.AddHours(-6);
-            _context.BitacoraAuditoria.Add(BitacoraHelper.Crear(User, "Registro_Accesos", "UPDATE", idAcceso.ToString(), "Sesión abierta", "Sesión cerrada remotamente"));
+            _context.BitacoraAuditoria.Add(await BitacoraHelper.CrearAsync(User, _context, "Registro_Accesos", "UPDATE", idAcceso.ToString(), "Sesión abierta", "Sesión cerrada remotamente"));
             await _context.SaveChangesAsync();
             return Ok(new { mensaje = "Sesión cerrada remotamente de forma exitosa." });
         }

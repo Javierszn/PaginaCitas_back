@@ -174,27 +174,30 @@ namespace RegistroCivilAPI.Controllers
             if (Convert.ToInt32(peticionExiste) == 0)
                 return NotFound(new { mensaje = "Petición no encontrada." });
 
-            if (!string.IsNullOrWhiteSpace(dto.NuevaPassword))
+            var restablecePassword = !string.IsNullOrWhiteSpace(dto.NuevaPassword);
+            string? usernameSolicitante = null;
+            UsuariosInterno? usuarioSolicitante = null;
+
+            if (restablecePassword)
             {
-                string username = null;
                 using (var cmd = _context.Database.GetDbConnection().CreateCommand())
                 {
                     cmd.CommandText = "SELECT username_solicitante FROM Peticiones_Soporte WHERE id_peticion = @id";
                     var p = cmd.CreateParameter(); p.ParameterName = "@id"; p.Value = id; cmd.Parameters.Add(p);
                     await _context.Database.OpenConnectionAsync();
                     var result = await cmd.ExecuteScalarAsync();
-                    username = result?.ToString();
+                    usernameSolicitante = result?.ToString();
                 }
 
-                if (string.IsNullOrEmpty(username))
+                if (string.IsNullOrEmpty(usernameSolicitante))
                     return NotFound(new { mensaje = "Petición no encontrada." });
 
-                var usuario = await _context.UsuariosInternos.FirstOrDefaultAsync(u => u.Username == username);
-                if (usuario == null)
+                usuarioSolicitante = await _context.UsuariosInternos.FirstOrDefaultAsync(u => u.Username == usernameSolicitante);
+                if (usuarioSolicitante == null)
                     return NotFound(new { mensaje = "El usuario solicitante ya no existe en el sistema." });
 
-                usuario.PasswordHash = BCrypt.Net.BCrypt.HashPassword(dto.NuevaPassword);
-                usuario.RequiereCambioPassword = true;
+                usuarioSolicitante.PasswordHash = BCrypt.Net.BCrypt.HashPassword(dto.NuevaPassword!);
+                usuarioSolicitante.RequiereCambioPassword = true;
                 await _context.SaveChangesAsync();
             }
 
@@ -203,7 +206,10 @@ namespace RegistroCivilAPI.Controllers
                 await _context.Database.ExecuteSqlRawAsync(
                     "UPDATE Peticiones_Soporte SET estatus = 'RESUELTA', respuesta = {0}, leido = 0 WHERE id_peticion = {1}",
                     respuestaSegura, id);
-                _context.BitacoraAuditoria.Add(BitacoraHelper.Crear(User, "Peticiones_Soporte", "UPDATE", id.ToString(), "PENDIENTE", dto.NuevaPassword != null ? "Petición resuelta; contraseña restablecida (secreto omitido)." : $"Petición resuelta: {respuestaSegura}"));
+                var detalleResolucion = restablecePassword
+                    ? $"Petición resuelta; contraseña temporal restablecida para {usuarioSolicitante!.Username}; nombre: {usuarioSolicitante.NombreCompleto}. Se solicitará una contraseña personal al ingresar."
+                    : $"Petición resuelta para {usernameSolicitante ?? "usuario solicitante"}.";
+                _context.BitacoraAuditoria.Add(await BitacoraHelper.CrearAsync(User, _context, "Peticiones_Soporte", "UPDATE", id.ToString(), "PENDIENTE", detalleResolucion));
                 await _context.SaveChangesAsync();
             }
             catch (Exception ex)
@@ -212,7 +218,7 @@ namespace RegistroCivilAPI.Controllers
                 return StatusCode(500, new { mensaje = "No se pudo resolver la petición por un error interno. Revisa los registros del servidor." });
             }
 
-            return Ok(new { mensaje = dto.NuevaPassword != null ? "Contraseña restablecida y petición resuelta." : "Petición marcada como resuelta y mensaje enviado al usuario." });
+            return Ok(new { mensaje = restablecePassword ? "Contraseña restablecida y petición resuelta." : "Petición marcada como resuelta y mensaje enviado al usuario." });
         }
 
         [HttpPut("MarcarLeidasAdmin")]

@@ -49,6 +49,7 @@ builder.Services.AddRateLimiter(options =>
 
 builder.Services.AddDbContext<RegistroCivilCitasContext>(options =>
     options.UseSqlServer(builder.Configuration.GetConnectionString("DefaultConnection")));
+builder.Services.AddHostedService<CitasEstadoBackgroundService>();
 
 builder.Services.AddControllers();
 

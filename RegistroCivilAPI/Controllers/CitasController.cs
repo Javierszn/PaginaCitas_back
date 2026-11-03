@@ -32,12 +32,12 @@ namespace RegistroCivilAPI.Controllers
 
         private async Task AutoActualizarInasistenciasAsync()
         {
-            // FIX DEL BUG DEL "PICK": Inyectar la hora UTC-6 de San Luis Potosí explícitamente
-            // para evitar que SmarterASP adelante las penalizaciones 6 horas.
-            DateTime horaMexico = DateTime.UtcNow.AddHours(-6);
+            // La cita queda NO_CONFIRMADA si nadie del personal la confirma dentro de los 15 minutos posteriores a su hora.
+            // NO_CONFIRMADA no cuenta como inasistencia del ciudadano ni genera sanción.
+            DateTime limiteConfirmacionMexico = DateTime.UtcNow.AddHours(-6).AddMinutes(-15);
             await _context.Database.ExecuteSqlRawAsync(
-                "UPDATE Citas SET estatus = 'NO_ASISTIO' WHERE estatus IN ('PROGRAMADA', 'CONFIRMADA', 'REPROGRAMADA') AND fecha_hora_fin < {0}", horaMexico
-            );
+                "UPDATE Citas SET estatus = 'NO_CONFIRMADA' WHERE estatus IN ('PROGRAMADA', 'REPROGRAMADA') AND fecha_hora_inicio <= {0}",
+                limiteConfirmacionMexico);
         }
 
         [HttpGet("Horarios")]
@@ -133,6 +133,7 @@ namespace RegistroCivilAPI.Controllers
 
             try
             {
+                await using var transaction = await _context.Database.BeginTransactionAsync(System.Data.IsolationLevel.Serializable);
                 string curpBuscado = string.IsNullOrWhiteSpace(solicitud.Curp) ? null : solicitud.Curp.Trim().ToUpperInvariant();
                 string nombreBuscado = string.IsNullOrWhiteSpace(solicitud.Nombre) ? null : solicitud.Nombre.Trim();
                 string telLimpio = new string((solicitud.Telefono ?? string.Empty).Where(char.IsDigit).ToArray());
@@ -143,53 +144,11 @@ namespace RegistroCivilAPI.Controllers
                 if (string.IsNullOrWhiteSpace(curpBuscado) && string.IsNullOrWhiteSpace(nombreBuscado))
                     return BadRequest(new { mensaje = "Debe proporcionar la CURP o el nombre completo para identificar a la persona." });
 
-                var telefonosCoincidentes = new List<string> { telLimpio };
-                if (telLimpio.StartsWith("52", StringComparison.Ordinal) && telLimpio.Length == 12)
-                    telefonosCoincidentes.Add(telLimpio.Substring(2)); // Compatibilidad con teléfonos mexicanos guardados antes sin lada.
-
-                var propietariosTelefono = await _context.Ciudadanos
-                    .Where(c => telefonosCoincidentes.Contains(c.Telefono))
-                    .ToListAsync();
-                var idsPropietariosTelefono = propietariosTelefono
-                    .Select(c => c.IdCiudadano)
-                    .Distinct()
-                    .ToArray();
-
-                if (idsPropietariosTelefono.Length > 1)
-                    return BadRequest(new { mensaje = "Este teléfono ya está asociado con otra persona y no se puede usar para agendar otra cita." });
-
                 Ciudadano ciudadano = null;
                 if (!string.IsNullOrWhiteSpace(curpBuscado))
                     ciudadano = await _context.Ciudadanos.FirstOrDefaultAsync(c => c.Curp == curpBuscado);
 
-                var propietarioTelefono = propietariosTelefono.FirstOrDefault();
-                if (ciudadano != null && propietarioTelefono != null && ciudadano.IdCiudadano != propietarioTelefono.IdCiudadano)
-                    return BadRequest(new { mensaje = "Este teléfono ya está ligado a otra CURP y no puede utilizarse para esta persona." });
-
-                if (ciudadano == null && propietarioTelefono != null)
-                {
-                    if (string.IsNullOrWhiteSpace(curpBuscado))
-                    {
-                        if (!NombreCoincide(propietarioTelefono, nombreBuscado))
-                            return BadRequest(new { mensaje = "Este teléfono ya está ligado a otra persona. Use el teléfono registrado para esta persona." });
-
-                        ciudadano = propietarioTelefono;
-                    }
-                    else if (propietarioTelefono.Curp != null &&
-                             propietarioTelefono.Curp.StartsWith("ENM", StringComparison.OrdinalIgnoreCase) &&
-                             !string.IsNullOrWhiteSpace(nombreBuscado) &&
-                             NombreCoincide(propietarioTelefono, nombreBuscado))
-                    {
-                        // Si antes reservó sin CURP, asociar ese registro sintético con la CURP capturada ahora.
-                        propietarioTelefono.Curp = curpBuscado;
-                        ciudadano = propietarioTelefono;
-                    }
-                    else
-                    {
-                        return BadRequest(new { mensaje = "Este teléfono ya está ligado a otra persona o CURP y no puede reutilizarse." });
-                    }
-                }
-                else if (ciudadano == null && propietarioTelefono == null && string.IsNullOrWhiteSpace(curpBuscado) && !string.IsNullOrWhiteSpace(nombreBuscado))
+                if (ciudadano == null && string.IsNullOrWhiteSpace(curpBuscado) && !string.IsNullOrWhiteSpace(nombreBuscado))
                 {
                     var tokensNombre = nombreBuscado.Split(' ', StringSplitOptions.RemoveEmptyEntries);
                     var candidatosNombre = await _context.Ciudadanos
@@ -200,7 +159,7 @@ namespace RegistroCivilAPI.Controllers
                         .ToList();
 
                     if (coincidenciasNombre.Count > 1)
-                        return BadRequest(new { mensaje = "Hay más de un registro con ese nombre. Capture la CURP para identificar a la persona antes de cambiar el teléfono." });
+                        return BadRequest(new { mensaje = "Hay más de un registro con ese nombre. Capture la CURP para identificar correctamente a la persona." });
 
                     if (coincidenciasNombre.Count == 1)
                         ciudadano = coincidenciasNombre[0];
@@ -228,7 +187,6 @@ namespace RegistroCivilAPI.Controllers
                     };
                     _context.Ciudadanos.Add(ciudadano);
                     await _context.SaveChangesAsync();
-                    idsPropietariosTelefono = new[] { ciudadano.IdCiudadano };
                 }
                 else
                 {
@@ -243,12 +201,12 @@ namespace RegistroCivilAPI.Controllers
                 }
 
                 var citaMismoTramite = await _context.Citas.AnyAsync(c =>
-                    (c.IdCiudadano == ciudadano.IdCiudadano || idsPropietariosTelefono.Contains(c.IdCiudadano)) &&
+                    c.IdCiudadano == ciudadano.IdCiudadano &&
                     c.IdTramite == solicitud.IdTramite &&
                     c.FechaHoraInicio.Date == solicitud.FechaHora.Date &&
                     (c.Estatus == "PROGRAMADA" || c.Estatus == "CONFIRMADA" || c.Estatus == "REPROGRAMADA"));
 
-                if (citaMismoTramite) return BadRequest(new { mensaje = "Alerta: Este teléfono ya tiene una cita pendiente para este trámite en este día, incluso si se realiza en otra sede." });
+                if (citaMismoTramite) return BadRequest(new { mensaje = "Ya tienes una cita pendiente para este trámite en ese día, aunque sea en otra sede." });
                 var tramiteEntity = await _context.Tramites.FindAsync(solicitud.IdTramite);
                 if (tramiteEntity == null) return BadRequest(new { mensaje = "Trámite no encontrado." });
 
@@ -257,9 +215,27 @@ namespace RegistroCivilAPI.Controllers
 
                 string folio;
 
-                await using var transaction = await _context.Database.BeginTransactionAsync(System.Data.IsolationLevel.Serializable);
                 try
                 {
+                    var inicioDia = solicitud.FechaHora.Date;
+                    var finDia = inicioDia.AddDays(1);
+                    var telefonosParaComparar = new List<string> { telLimpio };
+                    if (telLimpio.StartsWith("52", StringComparison.Ordinal) && telLimpio.Length == 12)
+                        telefonosParaComparar.Add(telLimpio.Substring(2)); // Compatibilidad con registros mexicanos anteriores.
+
+                    bool telefonoYaAgendadoEnEseBloque = await _context.Citas
+                        .AnyAsync(c => c.IdSede == solicitud.IdSede &&
+                            c.IdTramite == solicitud.IdTramite &&
+                            c.FechaHoraInicio >= inicioDia && c.FechaHoraInicio < finDia &&
+                            (c.Estatus == "PROGRAMADA" || c.Estatus == "CONFIRMADA" || c.Estatus == "REPROGRAMADA") &&
+                            telefonosParaComparar.Contains(c.IdCiudadanoNavigation.Telefono));
+
+                    if (telefonoYaAgendadoEnEseBloque)
+                    {
+                        await transaction.RollbackAsync();
+                        return BadRequest(new { mensaje = "Este teléfono ya está ligado a una persona con una cita agendada para ese día, trámite y sede." });
+                    }
+
                     bool solapada = await _context.Citas.AnyAsync(c =>
                         c.IdSede == solicitud.IdSede &&
                         (c.Estatus == "PROGRAMADA" || c.Estatus == "CONFIRMADA" || c.Estatus == "REPROGRAMADA") &&
@@ -391,15 +367,16 @@ namespace RegistroCivilAPI.Controllers
                 .FirstOrDefaultAsync(c => c.IdCita == folio);
 
             if (cita == null) return NotFound(new { mensaje = "Cita no encontrada." });
+            bool esNoConfirmada = cita.Estatus == "NO_CONFIRMADA";
             if (cita.Estatus == "CANCELADA" || cita.Estatus == "ATENDIDA" || cita.Estatus == "NO_ASISTIO" || cita.Estatus == "REPROGRAMADA")
-                return BadRequest(new { mensaje = "Solo se permite reprogramar la cita una vez. El estatus actual es " + cita.Estatus });
+                return BadRequest(new { mensaje = "Esta cita no puede reagendarse con su estatus actual: " + cita.Estatus });
 
             DateTime horaMexicoActual = DateTime.UtcNow.AddHours(-6);
             if (dto.NuevaFechaHora <= horaMexicoActual)
                 return BadRequest(new { mensaje = "La fecha y hora seleccionadas ya pasaron. Seleccione un horario futuro." });
-            if (cita.FechaHoraInicio <= horaMexicoActual)
+            if (!esNoConfirmada && cita.FechaHoraInicio <= horaMexicoActual)
                 return BadRequest(new { mensaje = "No se puede reprogramar una cita cuya hora ya comenzó o pasó." });
-            if (cita.FechaHoraInicio - horaMexicoActual < TimeSpan.FromHours(2))
+            if (!esNoConfirmada && cita.FechaHoraInicio - horaMexicoActual < TimeSpan.FromHours(2))
                 return BadRequest(new { mensaje = "Solo se puede reprogramar una cita con al menos 2 horas de anticipación." });
 
             int duracion = cita.IdTramiteNavigation.DuracionMinutos > 0 ? cita.IdTramiteNavigation.DuracionMinutos : 30;

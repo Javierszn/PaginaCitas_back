@@ -44,7 +44,7 @@ namespace RegistroCivilAPI.Controllers
             {
                 rango.FechaInicio = dto.FechaInicio; rango.FechaFin = dto.FechaFin;
             }
-            _context.BitacoraAuditoria.Add(BitacoraHelper.Crear(User, "Configuracion_Agenda", "UPDATE", "1", valorAnterior, $"Inicio: {dto.FechaInicio:yyyy-MM-dd}; Fin: {dto.FechaFin:yyyy-MM-dd}"));
+            _context.BitacoraAuditoria.Add(await BitacoraHelper.CrearAsync(User, _context, "Configuracion_Agenda", "UPDATE", "1", valorAnterior, $"Inicio: {dto.FechaInicio:yyyy-MM-dd}; Fin: {dto.FechaFin:yyyy-MM-dd}"));
             await _context.SaveChangesAsync();
             return Ok(new { mensaje = "Rango de fechas de reservación actualizado." });
         }
@@ -54,7 +54,7 @@ namespace RegistroCivilAPI.Controllers
         {
             var nuevoDia = new DiasInhabile { FechaBloqueada = DateOnly.FromDateTime(dto.Fecha), Motivo = dto.Motivo, IdSede = null };
             _context.DiasInhabiles.Add(nuevoDia);
-            _context.BitacoraAuditoria.Add(BitacoraHelper.Crear(User, "Dias_Inhabiles", "INSERT", dto.Fecha.ToString("yyyy-MM-dd"), null, $"Motivo: {dto.Motivo}"));
+            _context.BitacoraAuditoria.Add(await BitacoraHelper.CrearAsync(User, _context, "Dias_Inhabiles", "INSERT", dto.Fecha.ToString("yyyy-MM-dd"), null, $"Motivo: {dto.Motivo}"));
             await _context.SaveChangesAsync();
             return Ok(new { mensaje = "Día inhábil registrado correctamente. El calendario ha sido bloqueado." });
         }
@@ -66,7 +66,7 @@ namespace RegistroCivilAPI.Controllers
             var dia = await _context.DiasInhabiles.FindAsync(id);
             if (dia == null) return NotFound();
             _context.DiasInhabiles.Remove(dia);
-            _context.BitacoraAuditoria.Add(BitacoraHelper.Crear(User, "Dias_Inhabiles", "DELETE", id.ToString(), $"Fecha: {dia.FechaBloqueada:yyyy-MM-dd}; Motivo: {dia.Motivo}", null));
+            _context.BitacoraAuditoria.Add(await BitacoraHelper.CrearAsync(User, _context, "Dias_Inhabiles", "DELETE", id.ToString(), $"Fecha: {dia.FechaBloqueada:yyyy-MM-dd}; Motivo: {dia.Motivo}", null));
             await _context.SaveChangesAsync();
             return Ok(new { mensaje = "Día inhábil eliminado. El día vuelve a estar disponible." });
         }
