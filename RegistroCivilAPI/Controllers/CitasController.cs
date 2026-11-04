@@ -32,12 +32,17 @@ namespace RegistroCivilAPI.Controllers
 
         private async Task AutoActualizarInasistenciasAsync()
         {
-            // La cita queda NO_CONFIRMADA si nadie del personal la confirma dentro de los 15 minutos posteriores a su hora.
-            // NO_CONFIRMADA no cuenta como inasistencia del ciudadano ni genera sanción.
-            DateTime limiteConfirmacionMexico = DateTime.UtcNow.AddHours(-6).AddMinutes(-15);
+            // Informes debe confirmar la llegada dentro de los 25 minutos posteriores a la hora de inicio.
+            // Sin confirmación se convierte en inasistencia y aplica la sanción vigente.
+            DateTime limiteConfirmacionMexico = DateTime.UtcNow.AddHours(-6).AddMinutes(-25);
             await _context.Database.ExecuteSqlRawAsync(
-                "UPDATE Citas SET estatus = 'NO_CONFIRMADA' WHERE estatus IN ('PROGRAMADA', 'REPROGRAMADA') AND fecha_hora_inicio <= {0}",
+                "UPDATE Citas SET estatus = 'NO_ASISTIO' WHERE estatus IN ('PROGRAMADA', 'REPROGRAMADA') AND fecha_hora_inicio <= {0}",
                 limiteConfirmacionMexico);
+
+            DateTime ahoraMexico = DateTime.UtcNow.AddHours(-6);
+            await _context.Database.ExecuteSqlRawAsync(
+                "UPDATE Citas SET estatus = 'CANCELADA' WHERE estatus IN ('CANCELADA_INHABIL', 'PRESENCIAL_PENDIENTE') AND fecha_limite_resolucion_inhabil < {0}",
+                ahoraMexico);
         }
 
         [HttpGet("Horarios")]
@@ -67,6 +72,9 @@ namespace RegistroCivilAPI.Controllers
 
             var tramite = await _context.Tramites.FindAsync(idTramite);
             if (tramite == null) return BadRequest("Trámite no encontrado");
+            if (tramite.IdSede.HasValue && tramite.IdSede.Value != idSede) return Ok(new List<string>());
+            if (tramite.IdSede.HasValue && fechaCita.DayOfWeek is DayOfWeek.Saturday or DayOfWeek.Sunday)
+                return Ok(new List<string>());
 
             if (tramite.FechaInicioPermitida.HasValue && fechaCita.Date < tramite.FechaInicioPermitida.Value.Date)
                 return Ok(new List<string>());
@@ -87,13 +95,14 @@ namespace RegistroCivilAPI.Controllers
                 .Select(c => new { c.FechaHoraInicio, c.FechaHoraFin }).ToListAsync();
 
             var horasDisponibles = new List<string>();
-            TimeOnly horaActual = horarioSede.HoraApertura;
+            TimeOnly horaActual = tramite.HoraApertura ?? horarioSede.HoraApertura;
+            TimeOnly horaCierre = tramite.HoraCierre ?? horarioSede.HoraCierre;
 
             DateTime horaMexico = DateTime.UtcNow.AddHours(-6);
             TimeOnly now = TimeOnly.FromDateTime(horaMexico);
             DateTime hoyMexico = horaMexico.Date;
 
-            while (horaActual < horarioSede.HoraCierre)
+            while (horaActual < horaCierre)
             {
                 if (fechaCita.Date == hoyMexico && horaActual <= now)
                 {
@@ -203,12 +212,24 @@ namespace RegistroCivilAPI.Controllers
                 var citaMismoTramite = await _context.Citas.AnyAsync(c =>
                     c.IdCiudadano == ciudadano.IdCiudadano &&
                     c.IdTramite == solicitud.IdTramite &&
-                    c.FechaHoraInicio.Date == solicitud.FechaHora.Date &&
-                    (c.Estatus == "PROGRAMADA" || c.Estatus == "CONFIRMADA" || c.Estatus == "REPROGRAMADA"));
+                    (c.Estatus == "PROGRAMADA" || c.Estatus == "CONFIRMADA" || c.Estatus == "REPROGRAMADA" ||
+                     c.Estatus == "CANCELADA_INHABIL" || c.Estatus == "PRESENCIAL_PENDIENTE"));
 
-                if (citaMismoTramite) return BadRequest(new { mensaje = "Ya tienes una cita pendiente para este trámite en ese día, aunque sea en otra sede." });
+                if (citaMismoTramite) return BadRequest(new { mensaje = "Ya tienes una cita pendiente para este trámite. Debes atenderla, cancelarla o completar su reprogramación antes de reservar otra." });
                 var tramiteEntity = await _context.Tramites.FindAsync(solicitud.IdTramite);
                 if (tramiteEntity == null) return BadRequest(new { mensaje = "Trámite no encontrado." });
+                if (tramiteEntity.IdSede.HasValue && tramiteEntity.IdSede.Value != solicitud.IdSede)
+                    return BadRequest(new { mensaje = "Este trámite solo está disponible en la sede de la Dirección del Registro Civil, Zona Centro." });
+                if (tramiteEntity.IdSede.HasValue && solicitud.FechaHora.DayOfWeek is DayOfWeek.Saturday or DayOfWeek.Sunday)
+                    return BadRequest(new { mensaje = "La CURP Biométrica solo se atiende de lunes a viernes." });
+
+                if (tramiteEntity.HoraApertura.HasValue && tramiteEntity.HoraCierre.HasValue)
+                {
+                    TimeOnly horaInicio = TimeOnly.FromDateTime(solicitud.FechaHora);
+                    TimeOnly horaFinSolicitada = horaInicio.AddMinutes(tramiteEntity.DuracionMinutos > 0 ? tramiteEntity.DuracionMinutos : 30);
+                    if (horaInicio < tramiteEntity.HoraApertura.Value || horaFinSolicitada > tramiteEntity.HoraCierre.Value)
+                        return BadRequest(new { mensaje = "El horario seleccionado está fuera del horario de atención para este trámite." });
+                }
 
                 int duracion = tramiteEntity.DuracionMinutos > 0 ? tramiteEntity.DuracionMinutos : 30;
                 DateTime fechaFin = solicitud.FechaHora.AddMinutes(duracion);
@@ -227,7 +248,8 @@ namespace RegistroCivilAPI.Controllers
                         .AnyAsync(c => c.IdSede == solicitud.IdSede &&
                             c.IdTramite == solicitud.IdTramite &&
                             c.FechaHoraInicio >= inicioDia && c.FechaHoraInicio < finDia &&
-                            (c.Estatus == "PROGRAMADA" || c.Estatus == "CONFIRMADA" || c.Estatus == "REPROGRAMADA") &&
+                            (c.Estatus == "PROGRAMADA" || c.Estatus == "CONFIRMADA" || c.Estatus == "REPROGRAMADA" ||
+                             c.Estatus == "CANCELADA_INHABIL" || c.Estatus == "PRESENCIAL_PENDIENTE") &&
                             telefonosParaComparar.Contains(c.IdCiudadanoNavigation.Telefono));
 
                     if (telefonoYaAgendadoEnEseBloque)
@@ -302,6 +324,7 @@ namespace RegistroCivilAPI.Controllers
             {
                 folio = cita.IdCita,
                 estatus = cita.Estatus,
+                fechaLimiteResolucion = cita.FechaLimiteResolucionInhabil,
                 fecha = cita.FechaHoraInicio.ToString("yyyy-MM-dd"),
                 hora = cita.FechaHoraInicio.ToString("HH:mm"),
                 idTramite = cita.IdTramite,
@@ -326,14 +349,16 @@ namespace RegistroCivilAPI.Controllers
                 .Include(c => c.IdSedeNavigation)
                 .FirstOrDefaultAsync(c => c.IdCita == folio);
             if (cita == null) return NotFound(new { mensaje = "Cita no encontrada." });
-            if (cita.Estatus == "CANCELADA") return BadRequest(new { mensaje = "La cita ya se encuentra cancelada." });
+            bool esCierreInstitucional = cita.Estatus == "CANCELADA_INHABIL" && cita.FechaLimiteResolucionInhabil >= DateTime.UtcNow.AddHours(-6);
+            if (cita.Estatus == "CANCELADA" || cita.Estatus == "ATENDIDA" || cita.Estatus == "NO_ASISTIO") return BadRequest(new { mensaje = "La cita ya no se puede cancelar." });
 
             DateTime horaMexico = DateTime.UtcNow.AddHours(-6);
-            if (cita.FechaHoraInicio < horaMexico) return BadRequest(new { mensaje = "No se puede cancelar una cita de una fecha que ya pasó." });
-            if (cita.FechaHoraInicio - horaMexico < TimeSpan.FromHours(2))
+            if (!esCierreInstitucional && cita.FechaHoraInicio < horaMexico) return BadRequest(new { mensaje = "No se puede cancelar una cita de una fecha que ya pasó." });
+            if (!esCierreInstitucional && cita.FechaHoraInicio - horaMexico < TimeSpan.FromHours(2))
                 return BadRequest(new { mensaje = "Solo se puede cancelar una cita con al menos 2 horas de anticipación." });
 
             cita.Estatus = "CANCELADA";
+            cita.FechaLimiteResolucionInhabil = null;
 
             try
             {
@@ -357,6 +382,20 @@ namespace RegistroCivilAPI.Controllers
             return Ok(new { mensaje = "Su cita ha sido cancelada con éxito. El espacio ha sido liberado." });
         }
 
+        [HttpPut("{folio}/atencion-presencial")]
+        public async Task<ActionResult> ElegirAtencionPresencial(string folio)
+        {
+            var cita = await _context.Citas.Include(c => c.IdSedeNavigation).FirstOrDefaultAsync(c => c.IdCita == folio);
+            if (cita == null) return NotFound(new { mensaje = "Cita no encontrada." });
+            DateTime ahoraMexico = DateTime.UtcNow.AddHours(-6);
+            if (cita.Estatus != "CANCELADA_INHABIL" || cita.FechaLimiteResolucionInhabil <= ahoraMexico)
+                return BadRequest(new { mensaje = "La opción de conservar el turno presencial ya no está disponible." });
+
+            cita.Estatus = "PRESENCIAL_PENDIENTE";
+            await _context.SaveChangesAsync();
+            return Ok(new { mensaje = $"Su turno quedó protegido en {cita.IdSedeNavigation?.Nombre ?? "la sede original"}. Preséntese con su folio antes del {cita.FechaLimiteResolucionInhabil:dd/MM/yyyy}; tiene siete días hábiles." });
+        }
+
         [HttpPut("{folio}/reagendar")]
         public async Task<ActionResult> ReagendarCita(string folio, [FromBody] ReagendarDTO dto)
         {
@@ -367,16 +406,16 @@ namespace RegistroCivilAPI.Controllers
                 .FirstOrDefaultAsync(c => c.IdCita == folio);
 
             if (cita == null) return NotFound(new { mensaje = "Cita no encontrada." });
-            bool esNoConfirmada = cita.Estatus == "NO_CONFIRMADA";
-            if (cita.Estatus == "CANCELADA" || cita.Estatus == "ATENDIDA" || cita.Estatus == "NO_ASISTIO" || cita.Estatus == "REPROGRAMADA")
+            bool esCierreInstitucional = cita.Estatus == "CANCELADA_INHABIL" && cita.FechaLimiteResolucionInhabil > DateTime.UtcNow.AddHours(-6);
+            if ((!esCierreInstitucional && cita.Estatus != "PROGRAMADA") || cita.Estatus == "ATENDIDA" || cita.Estatus == "NO_ASISTIO" || cita.Estatus == "CANCELADA" || cita.Estatus == "PRESENCIAL_PENDIENTE" || cita.Estatus == "REPROGRAMADA")
                 return BadRequest(new { mensaje = "Esta cita no puede reagendarse con su estatus actual: " + cita.Estatus });
 
             DateTime horaMexicoActual = DateTime.UtcNow.AddHours(-6);
             if (dto.NuevaFechaHora <= horaMexicoActual)
                 return BadRequest(new { mensaje = "La fecha y hora seleccionadas ya pasaron. Seleccione un horario futuro." });
-            if (!esNoConfirmada && cita.FechaHoraInicio <= horaMexicoActual)
+            if (!esCierreInstitucional && cita.FechaHoraInicio <= horaMexicoActual)
                 return BadRequest(new { mensaje = "No se puede reprogramar una cita cuya hora ya comenzó o pasó." });
-            if (!esNoConfirmada && cita.FechaHoraInicio - horaMexicoActual < TimeSpan.FromHours(2))
+            if (!esCierreInstitucional && cita.FechaHoraInicio - horaMexicoActual < TimeSpan.FromHours(2))
                 return BadRequest(new { mensaje = "Solo se puede reprogramar una cita con al menos 2 horas de anticipación." });
 
             int duracion = cita.IdTramiteNavigation.DuracionMinutos > 0 ? cita.IdTramiteNavigation.DuracionMinutos : 30;
@@ -401,6 +440,7 @@ namespace RegistroCivilAPI.Controllers
                 cita.FechaHoraInicio = dto.NuevaFechaHora;
                 cita.FechaHoraFin = nuevaFechaFin;
                 cita.Estatus = "REPROGRAMADA";
+                cita.FechaLimiteResolucionInhabil = null;
 
                 await _context.SaveChangesAsync();
                 await transaction.CommitAsync();
@@ -448,7 +488,10 @@ namespace RegistroCivilAPI.Controllers
             {
                 DateTime fechaFiltro = DateTime.Today;
                 if (!string.IsNullOrEmpty(fecha) && DateTime.TryParse(fecha, out DateTime parsedDate)) fechaFiltro = parsedDate.Date;
-                query = query.Where(c => c.FechaHoraInicio.Year == fechaFiltro.Year && c.FechaHoraInicio.Month == fechaFiltro.Month && c.FechaHoraInicio.Day == fechaFiltro.Day);
+                DateTime ahoraMexico = DateTime.UtcNow.AddHours(-6);
+                query = query.Where(c =>
+                    (c.FechaHoraInicio.Year == fechaFiltro.Year && c.FechaHoraInicio.Month == fechaFiltro.Month && c.FechaHoraInicio.Day == fechaFiltro.Day) ||
+                    (c.Estatus == "PRESENCIAL_PENDIENTE" && c.FechaLimiteResolucionInhabil > ahoraMexico));
             }
 
             bool isSuperAdmin = userRole == "Super Administrador";
@@ -468,7 +511,8 @@ namespace RegistroCivilAPI.Controllers
                     tramite = c.IdTramiteNavigation.NombreTramite,
                     fechaStr = c.FechaHoraInicio.ToString("dd/MM/yyyy"),
                     hora = c.FechaHoraInicio.ToString("HH:mm"),
-                    estatus = c.Estatus,
+                  estatus = c.Estatus,
+                    fechaLimiteResolucion = c.FechaLimiteResolucionInhabil,
                     ip = isSuperAdmin ? c.IpOrigen : null,
                     navegador = isSuperAdmin ? c.Navegador : null,
                     so = isSuperAdmin ? c.SistemaOperativo : null
@@ -499,14 +543,26 @@ namespace RegistroCivilAPI.Controllers
             if (userRole == "Dirección") return Forbid();
             if (userRole == "Informes" && !string.Equals(dto.NuevoEstatus, "CONFIRMADA", StringComparison.OrdinalIgnoreCase))
                 return StatusCode(403, new { mensaje = "El rol Informes solo puede confirmar citas." });
+            if (string.Equals(dto.NuevoEstatus, "CONFIRMADA", StringComparison.OrdinalIgnoreCase) && userRole != "Informes")
+                return StatusCode(403, new { mensaje = "Solo el personal de Informes puede confirmar la llegada del ciudadano." });
             if (userRole != "Super Administrador" && userSedeClaim != cita.IdSede.ToString()) return StatusCode(403, new { mensaje = "Acceso denegado. Esta cita pertenece a otra sede." });
+
+            string nuevoEstatus = dto.NuevoEstatus?.Trim().ToUpperInvariant() ?? string.Empty;
+            bool transicionValida = (cita.Estatus == "PROGRAMADA" || cita.Estatus == "REPROGRAMADA" || cita.Estatus == "PRESENCIAL_PENDIENTE") && nuevoEstatus == "CONFIRMADA"
+                || cita.Estatus == "CONFIRMADA" && (nuevoEstatus == "ATENDIDA" || nuevoEstatus == "NO_ASISTIO");
+            if (!transicionValida)
+                return Conflict(new { mensaje = $"No se permite cambiar la cita de {cita.Estatus} a {dto.NuevoEstatus}." });
+            if (cita.Estatus == "PRESENCIAL_PENDIENTE" && cita.FechaLimiteResolucionInhabil <= DateTime.UtcNow.AddHours(-6))
+                return Conflict(new { mensaje = "Venció el plazo para presentarse presencialmente." });
 
             var usuarioReal = await _context.UsuariosInternos.FirstOrDefaultAsync(u => u.Username == usernameClaim);
             if (usuarioReal == null) return Unauthorized(new { mensaje = "Usuario no encontrado en el sistema." });
 
             int idUsuarioReal = usuarioReal.IdUsuario;
             string valorAnterior = cita.Estatus;
-            cita.Estatus = dto.NuevoEstatus;
+            cita.Estatus = nuevoEstatus;
+            if (valorAnterior == "PRESENCIAL_PENDIENTE")
+                cita.FechaLimiteResolucionInhabil = null;
 
             var bitacora = new BitacoraAuditorium
             {
@@ -515,7 +571,7 @@ namespace RegistroCivilAPI.Controllers
                 AccionRealizada = "UPDATE",
                 RegistroId = folio,
                 ValorAnterior = $"Estatus: {valorAnterior}",
-                ValorNuevo = $"Estatus: {dto.NuevoEstatus}",
+                ValorNuevo = $"Estatus: {nuevoEstatus}",
                 FechaCambio = DateTime.Now
             };
             _context.BitacoraAuditoria.Add(bitacora);
@@ -529,7 +585,7 @@ namespace RegistroCivilAPI.Controllers
                 return StatusCode(StatusCodes.Status409Conflict, new { mensaje = "Alerta de Concurrencia: Otro empleado acaba de modificar el estatus de esta cita." });
             }
 
-            return Ok(new { mensaje = $"La cita se ha marcado como {dto.NuevoEstatus} correctamente." });
+            return Ok(new { mensaje = $"La cita se ha marcado como {nuevoEstatus} correctamente." });
         }
 
         private static bool NombreCoincide(Ciudadano ciudadano, string nombreCapturado)

@@ -236,7 +236,7 @@ namespace RegistroCivilAPI.Controllers
                 if (log.ValorNuevo?.Contains("(RESTAURADO)", StringComparison.OrdinalIgnoreCase) == true)
                     return Conflict(new { mensaje = "Este movimiento ya fue deshecho y no se puede volver a aplicar." });
 
-                var estatusEsperado = log.ValorNuevo?.Replace("Estatus: ", "", StringComparison.OrdinalIgnoreCase).Trim();
+                var estatusEsperado = log.ValorNuevo?.Replace("Estatus: ", "", StringComparison.OrdinalIgnoreCase).Split(';')[0].Trim();
                 if (string.IsNullOrWhiteSpace(estatusEsperado))
                     return BadRequest(new { mensaje = "No se pudo validar el estado actual de la cita contra este movimiento." });
 
@@ -248,12 +248,14 @@ namespace RegistroCivilAPI.Controllers
                     return BadRequest(new { mensaje = "No se pudo leer el valor anterior para restaurarlo." });
 
                 
-                var estatusValidos = new[] { "PROGRAMADA", "CONFIRMADA", "REPROGRAMADA", "NO_CONFIRMADA", "ATENDIDA", "NO_ASISTIO", "CANCELADA" };
+                var estatusValidos = new[] { "PROGRAMADA", "CONFIRMADA", "REPROGRAMADA", "ATENDIDA", "NO_ASISTIO", "CANCELADA", "CANCELADA_INHABIL", "PRESENCIAL_PENDIENTE" };
                 if (Array.IndexOf(estatusValidos, estatusAnterior) < 0)
                     return BadRequest(new { mensaje = $"El valor anterior registrado ('{estatusAnterior}') no es un estatus válido y no puede restaurarse automáticamente." });
 
                 string estatusActual = cita.Estatus;
                 cita.Estatus = estatusAnterior;
+                if (estatusAnterior != "CANCELADA_INHABIL" && estatusAnterior != "PRESENCIAL_PENDIENTE")
+                    cita.FechaLimiteResolucionInhabil = null;
 
                 var nuevoLog = new BitacoraAuditorium
                 {

@@ -162,6 +162,10 @@ namespace RegistroCivilAPI.Migrations
                         .HasColumnType("varchar(20)")
                         .HasColumnName("estatus");
 
+                    b.Property<DateTime?>("FechaLimiteResolucionInhabil")
+                        .HasColumnType("datetime")
+                        .HasColumnName("fecha_limite_resolucion_inhabil");
+
                     b.Property<DateTime>("FechaHoraFin")
                         .HasColumnType("datetime")
                         .HasColumnName("fecha_hora_fin");
@@ -489,9 +493,21 @@ namespace RegistroCivilAPI.Migrations
                         .HasColumnType("date")
                         .HasColumnName("fecha_inicio_permitida");
 
+                      b.Property<TimeOnly?>("HoraApertura")
+                          .HasColumnType("time")
+                          .HasColumnName("hora_apertura");
+
+                      b.Property<TimeOnly?>("HoraCierre")
+                          .HasColumnType("time")
+                          .HasColumnName("hora_cierre");
+
                     b.Property<int>("IdCategoria")
                         .HasColumnType("int")
                         .HasColumnName("id_categoria");
+
+                      b.Property<int?>("IdSede")
+                          .HasColumnType("int")
+                          .HasColumnName("id_sede");
 
                     b.Property<int>("LimiteDiarioSede")
                         .HasColumnType("int")
@@ -510,6 +526,9 @@ namespace RegistroCivilAPI.Migrations
 
                     b.HasKey("IdTramite")
                         .HasName("PK__Tramites__DC2729AE6A30BD91");
+
+                      b.HasIndex("IdSede")
+                          .HasDatabaseName("IX_Tramites_id_sede");
 
                     b.HasIndex("IdCategoria");
 
@@ -649,6 +668,12 @@ namespace RegistroCivilAPI.Migrations
                         .HasForeignKey("IdCategoria")
                         .IsRequired()
                         .HasConstraintName("FK__Tramites__id_cat__44FF419A");
+
+                      b.HasOne("RegistroCivilAPI.Models.Sede", null)
+                          .WithMany()
+                          .HasForeignKey("IdSede")
+                          .OnDelete(DeleteBehavior.Restrict)
+                          .HasConstraintName("FK_Tramites_Sedes_id_sede");
 
                     b.Navigation("IdCategoriaNavigation");
                 });

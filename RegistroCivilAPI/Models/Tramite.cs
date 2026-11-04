@@ -16,6 +16,9 @@ public partial class Tramite
     public string? Requisitos { get; set; }
     public DateTime? FechaInicioPermitida { get; set; }
     public DateTime? FechaFinPermitida { get; set; }
+    public int? IdSede { get; set; }
+    public TimeOnly? HoraApertura { get; set; }
+    public TimeOnly? HoraCierre { get; set; }
     public virtual CategoriasTramite IdCategoriaNavigation { get; set; } = null!;
     public virtual ICollection<Cita> Citas { get; set; } = new List<Cita>();
 }

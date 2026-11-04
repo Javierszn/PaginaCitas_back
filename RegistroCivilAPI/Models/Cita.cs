@@ -14,6 +14,7 @@ public partial class Cita
     public DateTime FechaHoraInicio { get; set; }
     public DateTime FechaHoraFin { get; set; }
     public string Estatus { get; set; } = null!;
+    public DateTime? FechaLimiteResolucionInhabil { get; set; }
 
     public virtual Ciudadano IdCiudadanoNavigation { get; set; } = null!;
     public virtual Sede IdSedeNavigation { get; set; } = null!;

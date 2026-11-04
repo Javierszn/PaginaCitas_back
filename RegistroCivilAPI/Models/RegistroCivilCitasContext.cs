@@ -67,6 +67,7 @@ public partial class RegistroCivilCitasContext : DbContext
             entity.HasKey(e => e.IdCita).HasName("PK__Citas__6AEC3C092F0BF515");
             entity.Property(e => e.IdCita).HasMaxLength(20).IsUnicode(false).HasColumnName("id_cita");
             entity.Property(e => e.Estatus).HasMaxLength(20).IsUnicode(false).HasColumnName("estatus");
+            entity.Property(e => e.FechaLimiteResolucionInhabil).HasColumnType("datetime").HasColumnName("fecha_limite_resolucion_inhabil");
             entity.Property(e => e.FechaHoraFin).HasColumnType("datetime").HasColumnName("fecha_hora_fin");
             entity.Property(e => e.FechaHoraInicio).HasColumnType("datetime").HasColumnName("fecha_hora_inicio");
             entity.Property(e => e.IdCiudadano).HasColumnName("id_ciudadano");
@@ -154,6 +155,9 @@ public partial class RegistroCivilCitasContext : DbContext
             entity.Property(e => e.Descripcion).HasColumnType("text").HasColumnName("descripcion");
             entity.Property(e => e.DuracionMinutos).HasColumnName("duracion_minutos");
             entity.Property(e => e.IdCategoria).HasColumnName("id_categoria");
+            entity.Property(e => e.IdSede).HasColumnName("id_sede");
+            entity.Property(e => e.HoraApertura).HasColumnType("time").HasColumnName("hora_apertura");
+            entity.Property(e => e.HoraCierre).HasColumnType("time").HasColumnName("hora_cierre");
             entity.Property(e => e.LimiteDiarioSede).HasColumnName("limite_diario_sede");
             entity.Property(e => e.FechaInicioPermitida).HasColumnType("date").HasColumnName("fecha_inicio_permitida");
             entity.Property(e => e.FechaFinPermitida).HasColumnType("date").HasColumnName("fecha_fin_permitida");
@@ -163,6 +167,10 @@ public partial class RegistroCivilCitasContext : DbContext
                 .HasForeignKey(d => d.IdCategoria)
                 .OnDelete(DeleteBehavior.ClientSetNull)
                 .HasConstraintName("FK__Tramites__id_cat__44FF419A");
+              entity.HasOne<Sede>().WithMany().HasForeignKey(e => e.IdSede)
+                  .OnDelete(DeleteBehavior.Restrict)
+                  .HasConstraintName("FK_Tramites_Sedes_id_sede");
+              entity.HasIndex(e => e.IdSede).HasDatabaseName("IX_Tramites_id_sede");
         });
 
         modelBuilder.Entity<UsuariosInterno>(entity =>

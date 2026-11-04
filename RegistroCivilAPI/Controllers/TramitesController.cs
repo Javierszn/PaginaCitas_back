@@ -21,7 +21,7 @@ namespace RegistroCivilAPI.Controllers
 
         
         [HttpGet]
-        public async Task<ActionResult> GetTramitesActivos()
+        public async Task<ActionResult> GetTramitesActivos([FromQuery] int? idSede)
         {
             var categorias = await _context.CategoriasTramites
                 .Where(c => c.Activa == true)
@@ -29,7 +29,7 @@ namespace RegistroCivilAPI.Controllers
                     c.IdCategoria,
                     c.NombreCategoria,
                     c.Descripcion,
-                    Tramites = _context.Tramites.Where(t => t.IdCategoria == c.IdCategoria && t.Activo == true).ToList()
+                    Tramites = _context.Tramites.Where(t => t.IdCategoria == c.IdCategoria && t.Activo == true && (t.IdSede == null || (idSede.HasValue && t.IdSede == idSede))).ToList()
                 }).ToListAsync();
 
             return Ok(categorias.Where(c => c.Tramites.Any()));

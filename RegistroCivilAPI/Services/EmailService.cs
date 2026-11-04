@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Globalization;
 using System.Net;
 using System.Net.Http;
@@ -31,6 +31,15 @@ namespace RegistroCivilAPI.Services
             DateTime fechaHora,
             string tramite,
             string sede);
+
+        Task EnviarAvisoCierreInhabilAsync(
+            string? correoDestino,
+            string identificador,
+            string folio,
+            DateTime fechaHora,
+            string tramite,
+            string sede,
+            DateTime fechaLimite);
     }
 
     public class EmailService : IEmailService
@@ -86,7 +95,7 @@ namespace RegistroCivilAPI.Services
                 string listaRequisitosHtml = string.Empty;
                 if (!string.IsNullOrWhiteSpace(requisitos))
                 {
-                    string[] lineas = requisitos.Split(new[] { '\n', '\r' }, StringSplitOptions.RemoveEmptyEntries);
+                    string[] lineas = requisitos.Split(new[] { '\n', '\r', ';', ',' }, StringSplitOptions.RemoveEmptyEntries);
                     foreach (var linea in lineas)
                     {
                         listaRequisitosHtml += $"<li style='margin-bottom: 8px;'>{WebUtility.HtmlEncode(linea.Trim('•', ' ', '-'))}</li>";
@@ -254,5 +263,81 @@ namespace RegistroCivilAPI.Services
                 _logger?.LogError(ex, "Error inesperado al enviar el correo de cancelación.");
             }
         }
-    }
+
+        public async Task EnviarAvisoCierreInhabilAsync(
+            string? correoDestino,
+            string identificador,
+            string folio,
+            DateTime fechaHora,
+            string tramite,
+            string sede,
+            DateTime fechaLimite)
+        {
+            if (string.IsNullOrWhiteSpace(correoDestino))
+            {
+                _logger?.LogWarning("No se envió el aviso de cierre: el correo destinatario está vacío.");
+                return;
+            }
+
+            string apiKey = _config["EmailSettings:ApiKey"] ?? _config["EmailSettings:PasswordApp"] ?? string.Empty;
+            string correoOrigen = _config["EmailSettings:Correo"] ?? string.Empty;
+            if (string.IsNullOrWhiteSpace(apiKey) || string.IsNullOrWhiteSpace(correoOrigen))
+            {
+                _logger?.LogError("No se envió el aviso de cierre: falta configurar EmailSettings:ApiKey/PasswordApp o EmailSettings:Correo.");
+                return;
+            }
+
+            try
+            {
+                DateTime horaCitaMexico = fechaHora.Kind == DateTimeKind.Utc ? fechaHora.AddHours(-6) : fechaHora;
+                string nombreHtml = WebUtility.HtmlEncode(identificador);
+                string folioHtml = WebUtility.HtmlEncode(folio);
+                string tramiteHtml = WebUtility.HtmlEncode(tramite);
+                string sedeHtml = WebUtility.HtmlEncode(sede);
+                string fechaHtml = WebUtility.HtmlEncode(horaCitaMexico.ToString("dd/MM/yyyy HH:mm"));
+                string limiteHtml = WebUtility.HtmlEncode(fechaLimite.ToString("dd/MM/yyyy"));
+                string mensajeHtml = $@"
+                <div style='font-family: Arial, sans-serif; color: #333; max-width: 600px; margin: 0 auto; border: 1px solid #ddd; border-radius: 8px; padding: 30px 20px;'>
+                    <h2 style='color: #055A1C; text-align: center;'>Aviso importante sobre su cita</h2>
+                    <p>Estimado/a <b>{nombreHtml}</b>,</p>
+                    <p>Por el cierre de la sede en la fecha de su cita, su cita fue cancelada administrativamente. Esta cancelación no genera sanción.</p>
+                    <div style='background-color: #f9f9f9; padding: 20px; border-left: 5px solid #055A1C;'>
+                        <p><b>Folio:</b> {folioHtml}</p>
+                        <p><b>Trámite:</b> {tramiteHtml}</p>
+                        <p><b>Fecha y hora original:</b> {fechaHtml} hrs</p>
+                        <p><b>Sede:</b> {sedeHtml}</p>
+                        <p><b>Plazo para resolverlo:</b> hasta el {limiteHtml} (7 días hábiles).</p>
+                    </div>
+                    <p>Dentro de ese plazo puede solicitar otra fecha, cancelar la cita o acudir personalmente a la sede indicada. Si no encuentra una fecha disponible, se respetará su turno en esa sede durante el plazo señalado. Consulte su cita en el portal con su folio.</p>
+                    <p>La cita cancelada por el cierre no se considera inasistencia y no genera penalización.</p>
+                </div>";
+
+                using var request = new HttpRequestMessage(HttpMethod.Post, "https://api.brevo.com/v3/smtp/email");
+                request.Headers.Add("api-key", apiKey);
+                var payload = new
+                {
+                    sender = new { name = "Registro Civil Citas SLP", email = correoOrigen },
+                    to = new[] { new { email = correoDestino.Trim(), name = identificador } },
+                    subject = $"Aviso de cierre y cambio de cita - Folio: {folio}",
+                    htmlContent = mensajeHtml
+                };
+                request.Content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json");
+
+                using var httpClient = _httpClientFactory != null ? _httpClientFactory.CreateClient() : new HttpClient();
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+                using HttpResponseMessage response = await httpClient.SendAsync(request, cts.Token);
+                if (!response.IsSuccessStatusCode)
+                {
+                    string errorResponse = await response.Content.ReadAsStringAsync();
+                    _logger?.LogError("Brevo rechazó el aviso de cierre. Código: {Status}. Detalle: {Detalle}", (int)response.StatusCode, errorResponse);
+                    return;
+                }
+
+                _logger?.LogInformation("Aviso de cierre enviado correctamente por correo.");
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogError(ex, "Error al enviar el aviso de cierre por correo.");
+            }
+        }    }
 }

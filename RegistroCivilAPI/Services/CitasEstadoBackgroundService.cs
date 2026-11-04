@@ -17,22 +17,27 @@ public sealed class CitasEstadoBackgroundService : BackgroundService
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         using var timer = new PeriodicTimer(TimeSpan.FromMinutes(1));
-        await ActualizarCitasNoConfirmadasAsync(stoppingToken);
+        await ActualizarEstadosCitasAsync(stoppingToken);
 
         while (await timer.WaitForNextTickAsync(stoppingToken))
-            await ActualizarCitasNoConfirmadasAsync(stoppingToken);
+            await ActualizarEstadosCitasAsync(stoppingToken);
     }
 
-    private async Task ActualizarCitasNoConfirmadasAsync(CancellationToken stoppingToken)
+    private async Task ActualizarEstadosCitasAsync(CancellationToken stoppingToken)
     {
         try
         {
             await using var scope = _scopeFactory.CreateAsyncScope();
             var context = scope.ServiceProvider.GetRequiredService<RegistroCivilCitasContext>();
-            var limiteMexico = DateTime.UtcNow.AddHours(-6).AddMinutes(-15);
+            var limiteMexico = DateTime.UtcNow.AddHours(-6).AddMinutes(-25);
             await context.Database.ExecuteSqlRawAsync(
-                "UPDATE Citas SET estatus = 'NO_CONFIRMADA' WHERE estatus IN ('PROGRAMADA', 'REPROGRAMADA') AND fecha_hora_inicio <= {0}",
+                "UPDATE Citas SET estatus = 'NO_ASISTIO' WHERE estatus IN ('PROGRAMADA', 'REPROGRAMADA') AND fecha_hora_inicio <= {0}",
                 new object[] { limiteMexico }, stoppingToken);
+
+            var ahoraMexico = DateTime.UtcNow.AddHours(-6);
+            await context.Database.ExecuteSqlRawAsync(
+                "UPDATE Citas SET estatus = 'CANCELADA' WHERE estatus IN ('CANCELADA_INHABIL', 'PRESENCIAL_PENDIENTE') AND fecha_limite_resolucion_inhabil < {0}",
+                new object[] { ahoraMexico }, stoppingToken);
         }
         catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
         {
@@ -40,7 +45,7 @@ public sealed class CitasEstadoBackgroundService : BackgroundService
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "No se pudieron marcar las citas pendientes como NO_CONFIRMADA.");
+            _logger.LogError(ex, "No se pudieron actualizar los estados de las citas vencidas.");
         }
     }
 }
