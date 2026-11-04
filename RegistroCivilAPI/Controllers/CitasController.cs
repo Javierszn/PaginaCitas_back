@@ -22,6 +22,21 @@ namespace RegistroCivilAPI.Controllers
         private readonly IEmailService _emailService;
         private readonly IHttpClientFactory _httpClientFactory;
 
+        private static List<string> ObtenerVariantesTelefono(string? telefono)
+        {
+            string digitos = new string((telefono ?? string.Empty).Where(char.IsDigit).ToArray());
+            var variantes = new HashSet<string>(StringComparer.Ordinal) { digitos };
+
+            // Compatibilidad entre registros mexicanos guardados con y sin lada +52.
+            if (digitos.StartsWith("52", StringComparison.Ordinal) && digitos.Length == 12)
+                variantes.Add(digitos.Substring(2));
+            else if (digitos.Length == 10)
+                variantes.Add("52" + digitos);
+
+            variantes.Remove(string.Empty);
+            return variantes.ToList();
+        }
+
         public CitasController(RegistroCivilCitasContext context, IConfiguration config, IEmailService emailService, IHttpClientFactory httpClientFactory)
         {
             _context = context;
@@ -91,7 +106,7 @@ namespace RegistroCivilAPI.Controllers
             if (cantidadCitasDia >= limiteDiario) return Ok(new List<string>());
 
             var citasOcupadas = await _context.Citas
-                .Where(c => c.IdSede == idSede && c.FechaHoraInicio < fechaCita.Date.AddDays(1) && c.FechaHoraFin > fechaCita.Date && (c.Estatus == "PROGRAMADA" || c.Estatus == "CONFIRMADA" || c.Estatus == "REPROGRAMADA"))
+                .Where(c => c.IdSede == idSede && c.IdTramite == idTramite && c.FechaHoraInicio < fechaCita.Date.AddDays(1) && c.FechaHoraFin > fechaCita.Date && (c.Estatus == "PROGRAMADA" || c.Estatus == "CONFIRMADA" || c.Estatus == "REPROGRAMADA"))
                 .Select(c => new { c.FechaHoraInicio, c.FechaHoraFin }).ToListAsync();
 
             var horasDisponibles = new List<string>();
@@ -202,6 +217,17 @@ namespace RegistroCivilAPI.Controllers
                     ciudadano.Telefono = telLimpio;
                 }
 
+                var telefonosParaComparar = ObtenerVariantesTelefono(telLimpio);
+                var ciudadanosMismoNombreTelefono = await _context.Ciudadanos
+                    .Where(c => c.Telefono != null && telefonosParaComparar.Contains(c.Telefono))
+                    .ToListAsync();
+                var idsCiudadanoMismoNombreTelefono = ciudadanosMismoNombreTelefono
+                    .Where(c => NombreCoincide(c, nombreBuscado))
+                    .Select(c => c.IdCiudadano)
+                    .Append(ciudadano.IdCiudadano)
+                    .Distinct()
+                    .ToList();
+
                 DateTime limiteCastigo = DateTime.UtcNow.AddHours(-6).AddDays(-7);
                 var penalizado = await _context.Citas.AnyAsync(c => c.IdCiudadano == ciudadano.IdCiudadano && c.Estatus == "NO_ASISTIO" && c.FechaHoraInicio >= limiteCastigo);
                 if (penalizado)
@@ -210,17 +236,17 @@ namespace RegistroCivilAPI.Controllers
                 }
 
                 var citaMismoTramite = await _context.Citas.AnyAsync(c =>
-                    c.IdCiudadano == ciudadano.IdCiudadano &&
+                    idsCiudadanoMismoNombreTelefono.Contains(c.IdCiudadano) &&
                     c.IdTramite == solicitud.IdTramite &&
                     (c.Estatus == "PROGRAMADA" || c.Estatus == "CONFIRMADA" || c.Estatus == "REPROGRAMADA" ||
                      c.Estatus == "CANCELADA_INHABIL" || c.Estatus == "PRESENCIAL_PENDIENTE"));
 
-                if (citaMismoTramite) return BadRequest(new { mensaje = "Ya tienes una cita pendiente para este trámite. Debes atenderla, cancelarla o completar su reprogramación antes de reservar otra." });
+                if (citaMismoTramite) return BadRequest(new { mensaje = "Ya existe una cita activa para este trámite con esta CURP o con el mismo nombre y teléfono. Debes resolverla antes de reservar otra." });
                 var tramiteEntity = await _context.Tramites.FindAsync(solicitud.IdTramite);
                 if (tramiteEntity == null) return BadRequest(new { mensaje = "Trámite no encontrado." });
                 if (tramiteEntity.IdSede.HasValue && tramiteEntity.IdSede.Value != solicitud.IdSede)
                     return BadRequest(new { mensaje = "Este trámite solo está disponible en la sede de la Dirección del Registro Civil, Zona Centro." });
-                if (tramiteEntity.IdSede.HasValue && solicitud.FechaHora.DayOfWeek is DayOfWeek.Saturday or DayOfWeek.Sunday)
+                if (string.Equals(tramiteEntity.NombreTramite, "CURP BIOMÉTRICA", StringComparison.OrdinalIgnoreCase) && solicitud.FechaHora.DayOfWeek is DayOfWeek.Saturday or DayOfWeek.Sunday)
                     return BadRequest(new { mensaje = "La CURP Biométrica solo se atiende de lunes a viernes." });
 
                 if (tramiteEntity.HoraApertura.HasValue && tramiteEntity.HoraCierre.HasValue)
@@ -240,26 +266,25 @@ namespace RegistroCivilAPI.Controllers
                 {
                     var inicioDia = solicitud.FechaHora.Date;
                     var finDia = inicioDia.AddDays(1);
-                    var telefonosParaComparar = new List<string> { telLimpio };
-                    if (telLimpio.StartsWith("52", StringComparison.Ordinal) && telLimpio.Length == 12)
-                        telefonosParaComparar.Add(telLimpio.Substring(2)); // Compatibilidad con registros mexicanos anteriores.
 
                     bool telefonoYaAgendadoEnEseBloque = await _context.Citas
-                        .AnyAsync(c => c.IdSede == solicitud.IdSede &&
-                            c.IdTramite == solicitud.IdTramite &&
+                        .AnyAsync(c =>
                             c.FechaHoraInicio >= inicioDia && c.FechaHoraInicio < finDia &&
+                            c.FechaHoraInicio < fechaFin && c.FechaHoraFin > solicitud.FechaHora &&
                             (c.Estatus == "PROGRAMADA" || c.Estatus == "CONFIRMADA" || c.Estatus == "REPROGRAMADA" ||
                              c.Estatus == "CANCELADA_INHABIL" || c.Estatus == "PRESENCIAL_PENDIENTE") &&
+                            c.IdCiudadanoNavigation.Telefono != null &&
                             telefonosParaComparar.Contains(c.IdCiudadanoNavigation.Telefono));
 
                     if (telefonoYaAgendadoEnEseBloque)
                     {
                         await transaction.RollbackAsync();
-                        return BadRequest(new { mensaje = "Este teléfono ya está ligado a una persona con una cita agendada para ese día, trámite y sede." });
+                        return BadRequest(new { mensaje = "Este teléfono ya tiene una cita activa en ese día y horario, aunque sea para otro trámite o sede." });
                     }
 
                     bool solapada = await _context.Citas.AnyAsync(c =>
                         c.IdSede == solicitud.IdSede &&
+                        c.IdTramite == solicitud.IdTramite &&
                         (c.Estatus == "PROGRAMADA" || c.Estatus == "CONFIRMADA" || c.Estatus == "REPROGRAMADA") &&
                         c.FechaHoraInicio < fechaFin &&
                         c.FechaHoraFin > solicitud.FechaHora);
@@ -268,6 +293,18 @@ namespace RegistroCivilAPI.Controllers
                     {
                         await transaction.RollbackAsync();
                         return BadRequest(new { mensaje = "Ese horario acaba de ser tomado por otro ciudadano. Por favor seleccione otro horario disponible." });
+                    }
+
+                    bool ciudadanoYaTieneCitaEnEseHorario = await _context.Citas.AnyAsync(c =>
+                        c.IdCiudadano == ciudadano.IdCiudadano &&
+                        (c.Estatus == "PROGRAMADA" || c.Estatus == "CONFIRMADA" || c.Estatus == "REPROGRAMADA" ||
+                         c.Estatus == "CANCELADA_INHABIL" || c.Estatus == "PRESENCIAL_PENDIENTE") &&
+                        c.FechaHoraInicio < fechaFin && c.FechaHoraFin > solicitud.FechaHora);
+
+                    if (ciudadanoYaTieneCitaEnEseHorario)
+                    {
+                        await transaction.RollbackAsync();
+                        return Conflict(new { mensaje = "Ya tienes otra cita activa a esa hora. Elige un horario distinto." });
                     }
 
                     folio = Guid.NewGuid().ToString().Substring(0, 8);
@@ -427,6 +464,7 @@ namespace RegistroCivilAPI.Controllers
                 bool solapada = await _context.Citas.AnyAsync(c =>
                     c.IdCita != folio &&
                     c.IdSede == cita.IdSede &&
+                    c.IdTramite == cita.IdTramite &&
                     (c.Estatus == "PROGRAMADA" || c.Estatus == "CONFIRMADA" || c.Estatus == "REPROGRAMADA") &&
                     c.FechaHoraInicio < nuevaFechaFin &&
                     c.FechaHoraFin > dto.NuevaFechaHora);
@@ -435,6 +473,37 @@ namespace RegistroCivilAPI.Controllers
                 {
                     await transaction.RollbackAsync();
                     return BadRequest(new { mensaje = "Ese horario acaba de ser tomado por otro ciudadano. Por favor seleccione otro horario disponible." });
+                }
+
+                bool ciudadanoOcupadoEnNuevoHorario = await _context.Citas.AnyAsync(c =>
+                    c.IdCita != folio &&
+                    c.IdCiudadano == cita.IdCiudadano &&
+                    (c.Estatus == "PROGRAMADA" || c.Estatus == "CONFIRMADA" || c.Estatus == "REPROGRAMADA" ||
+                     c.Estatus == "CANCELADA_INHABIL" || c.Estatus == "PRESENCIAL_PENDIENTE") &&
+                    c.FechaHoraInicio < nuevaFechaFin && c.FechaHoraFin > dto.NuevaFechaHora);
+
+                if (ciudadanoOcupadoEnNuevoHorario)
+                {
+                    await transaction.RollbackAsync();
+                    return Conflict(new { mensaje = "Ya tienes otra cita activa a esa hora. Elige un horario distinto." });
+                }
+
+                var telefonosParaComparar = ObtenerVariantesTelefono(cita.IdCiudadanoNavigation.Telefono);
+                var inicioDiaNuevo = dto.NuevaFechaHora.Date;
+                var finDiaNuevo = inicioDiaNuevo.AddDays(1);
+                bool telefonoOcupadoEnNuevoHorario = await _context.Citas.AnyAsync(c =>
+                    c.IdCita != folio &&
+                    c.FechaHoraInicio >= inicioDiaNuevo && c.FechaHoraInicio < finDiaNuevo &&
+                    c.FechaHoraInicio < nuevaFechaFin && c.FechaHoraFin > dto.NuevaFechaHora &&
+                    (c.Estatus == "PROGRAMADA" || c.Estatus == "CONFIRMADA" || c.Estatus == "REPROGRAMADA" ||
+                     c.Estatus == "CANCELADA_INHABIL" || c.Estatus == "PRESENCIAL_PENDIENTE") &&
+                    c.IdCiudadanoNavigation.Telefono != null &&
+                    telefonosParaComparar.Contains(c.IdCiudadanoNavigation.Telefono));
+
+                if (telefonoOcupadoEnNuevoHorario)
+                {
+                    await transaction.RollbackAsync();
+                    return Conflict(new { mensaje = "Este teléfono ya tiene una cita activa en ese día y horario, aunque sea para otro trámite o sede." });
                 }
 
                 cita.FechaHoraInicio = dto.NuevaFechaHora;
@@ -588,7 +657,7 @@ namespace RegistroCivilAPI.Controllers
             return Ok(new { mensaje = $"La cita se ha marcado como {nuevoEstatus} correctamente." });
         }
 
-        private static bool NombreCoincide(Ciudadano ciudadano, string nombreCapturado)
+        private static bool NombreCoincide(Ciudadano ciudadano, string? nombreCapturado)
         {
             if (ciudadano == null || string.IsNullOrWhiteSpace(nombreCapturado)) return false;
 

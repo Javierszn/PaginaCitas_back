@@ -26,16 +26,10 @@ DECLARE @CategoriaCurp int = (
     SELECT TOP (1) id_categoria FROM dbo.Categorias_Tramites
     WHERE id_categoria = 4 AND nombre_categoria LIKE N''%CURP%''
 );
-DECLARE @SedeCentro int = (
-    SELECT TOP (1) id_sede FROM dbo.Sedes
-    WHERE nombre LIKE N''%Zona Centro%'' ORDER BY id_sede
-);
 IF @CategoriaCurp IS NULL THROW 51002, ''No se encontró la categoría CURP (id_categoria 4).'', 1;
-IF @SedeCentro IS NULL THROW 51001, ''No se encontró la sede Zona Centro.'', 1;
 IF NOT EXISTS (
     SELECT 1 FROM dbo.Tramites
-    WHERE id_categoria = @CategoriaCurp AND id_sede = @SedeCentro
-      AND nombre_tramite = N''CURP BIOMÉTRICA''
+    WHERE id_categoria = @CategoriaCurp AND nombre_tramite = N''CURP BIOMÉTRICA''
 )
 BEGIN
     INSERT dbo.Tramites
@@ -47,8 +41,18 @@ BEGIN
         (@CategoriaCurp, N''CURP BIOMÉTRICA'',
          N''Registro de datos biométricos (huellas dactilares, iris y rostro) para fortalecer la seguridad e identidad.'',
          15, 50, 0, 1,
-         N''CURP impresa certificada por RENAPO; Identificación oficial vigente; Correo electrónico personal'',
-         NULL, NULL, @SedeCentro, ''08:00'', ''15:00'');
+         N''CURP impresa certificada por RENAPO, Identificación oficial vigente, Correo electrónico personal'',
+         NULL, NULL, NULL, ''08:00'', ''15:00'');
+END
+ELSE
+BEGIN
+    UPDATE dbo.Tramites
+    SET id_sede = NULL,
+        activo = 1,
+        hora_apertura = ''08:00'',
+        hora_cierre = ''15:00'',
+        requisitos = N''CURP impresa certificada por RENAPO, Identificación oficial vigente, Correo electrónico personal''
+    WHERE id_categoria = @CategoriaCurp AND nombre_tramite = N''CURP BIOMÉTRICA'';
 END;';
 
     IF OBJECT_ID(N'dbo.__EFMigrationsHistory', N'U') IS NOT NULL
@@ -64,9 +68,9 @@ BEGIN CATCH
 END CATCH;
 
 EXEC sys.sp_executesql N'
-SELECT t.id_tramite, t.nombre_tramite, s.nombre AS sede,
+SELECT t.id_tramite, t.nombre_tramite, COALESCE(s.nombre, N''Todas las sedes'') AS sede,
        t.duracion_minutos, t.costo, t.limite_diario_sede,
        t.hora_apertura, t.hora_cierre, t.requisitos
 FROM dbo.Tramites t
-JOIN dbo.Sedes s ON s.id_sede = t.id_sede
+LEFT JOIN dbo.Sedes s ON s.id_sede = t.id_sede
 WHERE t.nombre_tramite = N''CURP BIOMÉTRICA'';';
