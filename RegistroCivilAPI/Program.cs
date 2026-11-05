@@ -47,17 +47,25 @@ builder.Services.AddRateLimiter(options =>
     options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
 });
 
+var connectionString = builder.Configuration.GetConnectionString("DefaultConnection");
+if (string.IsNullOrWhiteSpace(connectionString))
+    throw new InvalidOperationException("Falta ConnectionStrings:DefaultConnection. Configúrala mediante User Secrets en desarrollo o ConnectionStrings__DefaultConnection en el servidor.");
+
 builder.Services.AddDbContext<RegistroCivilCitasContext>(options =>
-    options.UseSqlServer(builder.Configuration.GetConnectionString("DefaultConnection")));
+    options.UseSqlServer(connectionString));
 builder.Services.AddHostedService<CitasEstadoBackgroundService>();
 
 builder.Services.AddControllers();
 
+var allowedOrigins = builder.Configuration.GetSection("Cors:AllowedOrigins").Get<string[]>() ?? Array.Empty<string>();
+if (allowedOrigins.Length == 0 || allowedOrigins.Any(string.IsNullOrWhiteSpace))
+    throw new InvalidOperationException("Configura al menos un origen permitido en Cors:AllowedOrigins.");
+
 builder.Services.AddCors(options =>
 {
-    options.AddPolicy("PermitirTodo", policy =>
+    options.AddPolicy("Frontend", policy =>
     {
-        policy.AllowAnyOrigin()
+        policy.WithOrigins(allowedOrigins)
               .AllowAnyHeader()
               .AllowAnyMethod();
     });
@@ -66,6 +74,8 @@ builder.Services.AddCors(options =>
 builder.Services.AddScoped<IEmailService, EmailService>();
 
 var jwtKey = builder.Configuration["JwtSettings:SecretKey"];
+if (string.IsNullOrWhiteSpace(jwtKey) || jwtKey.Length < 32 || jwtKey.StartsWith("REEMPLAZAR", StringComparison.OrdinalIgnoreCase))
+    throw new InvalidOperationException("JwtSettings:SecretKey debe ser un secreto configurado de al menos 32 caracteres; usa User Secrets o JwtSettings__SecretKey en el servidor.");
 var keyBytes = Encoding.UTF8.GetBytes(jwtKey);
 
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
@@ -109,7 +119,7 @@ app.UseExceptionHandler(errorApp =>
 });
 
 app.UseRouting();
-app.UseCors("PermitirTodo");
+app.UseCors("Frontend");
 app.UseRateLimiter();
 app.UseAuthentication();
 app.UseAuthorization();

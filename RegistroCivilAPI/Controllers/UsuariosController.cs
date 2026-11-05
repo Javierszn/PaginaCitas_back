@@ -223,7 +223,7 @@ namespace RegistroCivilAPI.Controllers
 
             if (!string.IsNullOrWhiteSpace(busqueda))
             {
-                query = query.Where(a => a.Username.Contains(busqueda) || a.IdAcceso.ToString() == busqueda);
+                query = query.Where(a => a.Username.ToLower().Contains(busqueda.ToLower()) || a.IdAcceso.ToString() == busqueda);
             }
             else if (!string.IsNullOrWhiteSpace(fecha) && System.DateTime.TryParse(fecha, out System.DateTime parsedDate))
             {

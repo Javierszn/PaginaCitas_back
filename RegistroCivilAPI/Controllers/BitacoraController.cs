@@ -44,8 +44,8 @@ namespace RegistroCivilAPI.Controllers
                                          b.TablaAfectada.ToLower().Contains(busqueda) ||
                                          b.AccionRealizada.ToLower().Contains(busqueda) ||
                                          b.RegistroId.ToLower().Contains(busqueda) ||
-                                         (b.ValorAnterior != null && b.ValorAnterior.Contains(busqueda)) ||
-                                         (b.ValorNuevo != null && b.ValorNuevo.Contains(busqueda)));
+                                         (b.ValorAnterior != null && b.ValorAnterior.ToLower().Contains(busqueda)) ||
+                                         (b.ValorNuevo != null && b.ValorNuevo.ToLower().Contains(busqueda)));
             }
             else
             {
