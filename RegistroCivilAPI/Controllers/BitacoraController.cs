@@ -23,11 +23,18 @@ namespace RegistroCivilAPI.Controllers
 
 
         [HttpGet]
-        public async Task<ActionResult> ObtenerBitacora([FromQuery] string? fecha = null, [FromQuery] string? busqueda = null, [FromQuery] int pagina = 1, [FromQuery] int registrosPorPagina = 50)
+        public async Task<ActionResult> ObtenerBitacora([FromQuery] string? fecha = null, [FromQuery] string? busqueda = null, [FromQuery] int pagina = 1, [FromQuery] int registrosPorPagina = 50, [FromQuery] int? idSede = null)
         {
             var query = _context.BitacoraAuditoria
                 .Include(b => b.IdUsuarioInternoNavigation)
                 .AsQueryable(); 
+
+            var rol = User.FindFirst(ClaimTypes.Role)?.Value;
+            var sedeUsuario = User.FindFirst("SedeId")?.Value;
+            if (rol != "Super Administrador" && int.TryParse(sedeUsuario, out var sedeFija))
+                query = query.Where(b => b.IdUsuarioInternoNavigation.IdSede == sedeFija);
+            else if (idSede.HasValue && idSede.Value > 0)
+                query = query.Where(b => b.IdUsuarioInternoNavigation.IdSede == idSede.Value);
 
             if (!string.IsNullOrWhiteSpace(busqueda))
             {

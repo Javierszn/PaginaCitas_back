@@ -193,7 +193,7 @@ namespace RegistroCivilAPI.Controllers
         }
         [HttpGet("Accesos")]
         [Authorize(Roles = "Super Administrador")]
-        public async Task<ActionResult> GetAccesos([FromQuery] int page = 1, [FromQuery] int pageSize = 10, [FromQuery] string? fecha = null, [FromQuery] string? busqueda = null)
+        public async Task<ActionResult> GetAccesos([FromQuery] int page = 1, [FromQuery] int pageSize = 10, [FromQuery] string? fecha = null, [FromQuery] string? busqueda = null, [FromQuery] int? idSede = null)
         {
             DateTime horaMexico = DateTime.UtcNow.AddHours(-6);
             await _context.Database.ExecuteSqlRawAsync(
@@ -212,6 +212,14 @@ namespace RegistroCivilAPI.Controllers
                 horaMexico);
 
             var query = _context.RegistroAccesos.AsQueryable();
+
+            if (idSede.HasValue && idSede.Value > 0)
+            {
+                var usernamesDeSede = _context.UsuariosInternos
+                    .Where(u => u.IdSede == idSede.Value)
+                    .Select(u => u.Username);
+                query = query.Where(a => usernamesDeSede.Contains(a.Username));
+            }
 
             if (!string.IsNullOrWhiteSpace(busqueda))
             {

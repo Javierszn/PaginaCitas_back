@@ -9,6 +9,7 @@ using System.Security.Claims;
 using System.Net.Http;
 using System.Text.Json;
 using RegistroCivilAPI.Services;
+using System.Net.Mail;
 
 namespace RegistroCivilAPI.Controllers
 {
@@ -20,23 +21,31 @@ namespace RegistroCivilAPI.Controllers
         private readonly IHttpClientFactory _httpClientFactory;
         private readonly IConfiguration _config;
         private readonly ILogger<PeticionesController> _logger;
+        private readonly IEmailService _emailService;
 
-        public PeticionesController(RegistroCivilCitasContext context, IHttpClientFactory httpClientFactory, IConfiguration config, ILogger<PeticionesController> logger)
+        public PeticionesController(RegistroCivilCitasContext context, IHttpClientFactory httpClientFactory, IConfiguration config, ILogger<PeticionesController> logger, IEmailService emailService)
         {
             _context = context;
             _httpClientFactory = httpClientFactory;
             _config = config;
             _logger = logger;
+            _emailService = emailService;
         }
 
         [HttpGet]
         [Authorize(Roles = "Super Administrador")]
-        public async Task<ActionResult> GetPeticiones()
+        public async Task<ActionResult> GetPeticiones([FromQuery] int? idSede = null)
         {
             var peticiones = new List<object>();
             using (var command = _context.Database.GetDbConnection().CreateCommand())
             {
-                command.CommandText = "SELECT id_peticion, username_solicitante, tipo_peticion, descripcion, estatus, fecha_solicitud, respuesta, leido FROM Peticiones_Soporte ORDER BY fecha_solicitud DESC";
+                command.CommandText = "SELECT p.id_peticion, p.username_solicitante, p.tipo_peticion, p.descripcion, p.estatus, p.fecha_solicitud, p.respuesta, p.leido, u.nombre_completo, u.id_sede, p.correo_contacto " +
+                    "FROM Peticiones_Soporte p LEFT JOIN Usuarios_Internos u ON u.username = p.username_solicitante " +
+                    "WHERE (@idSede IS NULL OR @idSede = 0 OR u.id_sede = @idSede) ORDER BY p.fecha_solicitud DESC";
+                var parametroSede = command.CreateParameter();
+                parametroSede.ParameterName = "@idSede";
+                parametroSede.Value = idSede.HasValue ? idSede.Value : DBNull.Value;
+                command.Parameters.Add(parametroSede);
                 await _context.Database.OpenConnectionAsync();
 
                 using (var result = await command.ExecuteReaderAsync())
@@ -52,7 +61,10 @@ namespace RegistroCivilAPI.Controllers
                             estatus = result.GetString(4),
                             fecha = result.GetDateTime(5),
                             respuesta = result.IsDBNull(6) ? "" : result.GetString(6),
-                            leido = result.IsDBNull(7) ? false : result.GetBoolean(7)
+                            leido = result.IsDBNull(7) ? false : result.GetBoolean(7),
+                            nombreCompleto = result.IsDBNull(8) ? "" : result.GetString(8),
+                            idSede = result.IsDBNull(9) ? (int?)null : result.GetInt32(9),
+                            correo = result.IsDBNull(10) ? "" : result.GetString(10)
                         });
                     }
                 }
@@ -127,16 +139,18 @@ namespace RegistroCivilAPI.Controllers
             if (string.Equals(tipo, "RECUPERAR CONTRASEÑA", StringComparison.OrdinalIgnoreCase))
             {
                 const string mensajeRecuperacion = "Si la cuenta corresponde a un usuario registrado, la solicitud se enviará para revisión. Si no existe, no se generará un ticket.";
+                if (string.IsNullOrWhiteSpace(dto.Correo) || dto.Correo.Length > 320 || !MailAddress.TryCreate(dto.Correo.Trim(), out _))
+                    return BadRequest(new { mensaje = "Ingrese un correo electrónico válido para recibir la contraseña temporal." });
                 bool usuarioExiste = await _context.UsuariosInternos.AnyAsync(u => u.Username == username);
 
                 if (!usuarioExiste)
                     return Ok(new { mensaje = mensajeRecuperacion });
 
                 await _context.Database.ExecuteSqlRawAsync(
-                    "INSERT INTO Peticiones_Soporte (username_solicitante, tipo_peticion, descripcion, fecha_solicitud) " +
-                    "SELECT {0}, {1}, {2}, {3} WHERE NOT EXISTS (" +
-                    "SELECT 1 FROM Peticiones_Soporte WHERE username_solicitante = {0} AND tipo_peticion = {1} AND estatus = 'PENDIENTE')",
-                    username, tipo, string.IsNullOrWhiteSpace(dto.Descripcion) ? "Solicitud de recuperación de contraseña." : dto.Descripcion.Trim(), horaMexico);
+                    "IF EXISTS (SELECT 1 FROM Peticiones_Soporte WHERE username_solicitante = {0} AND tipo_peticion = {1} AND estatus = 'PENDIENTE') " +
+                    "UPDATE Peticiones_Soporte SET correo_contacto = {2} WHERE username_solicitante = {0} AND tipo_peticion = {1} AND estatus = 'PENDIENTE'; " +
+                    "ELSE INSERT INTO Peticiones_Soporte (username_solicitante, tipo_peticion, descripcion, fecha_solicitud, correo_contacto) VALUES ({0}, {1}, {3}, {4}, {2})",
+                    username, tipo, dto.Correo.Trim(), string.IsNullOrWhiteSpace(dto.Descripcion) ? "Solicitud de recuperación de contraseña." : dto.Descripcion.Trim(), horaMexico);
 
                 return Ok(new { mensaje = mensajeRecuperacion });
             }
@@ -160,37 +174,40 @@ namespace RegistroCivilAPI.Controllers
             if (respuestaSegura.Length > 500)
                 return BadRequest(new { mensaje = "La respuesta no puede superar los 500 caracteres." });
 
-            object peticionExiste;
+            string? usernameSolicitante = null;
+            string? correoContacto = null;
+            string? estatusPeticion = null;
             using (var cmdExiste = _context.Database.GetDbConnection().CreateCommand())
             {
-                cmdExiste.CommandText = "SELECT COUNT(1) FROM Peticiones_Soporte WHERE id_peticion = @id";
+                cmdExiste.CommandText = "SELECT username_solicitante, estatus, correo_contacto FROM Peticiones_Soporte WHERE id_peticion = @id";
                 var parametroId = cmdExiste.CreateParameter();
                 parametroId.ParameterName = "@id";
                 parametroId.Value = id;
                 cmdExiste.Parameters.Add(parametroId);
                 await _context.Database.OpenConnectionAsync();
-                peticionExiste = await cmdExiste.ExecuteScalarAsync();
+                using var reader = await cmdExiste.ExecuteReaderAsync();
+                if (await reader.ReadAsync())
+                {
+                    usernameSolicitante = reader.GetString(0);
+                    estatusPeticion = reader.GetString(1);
+                    correoContacto = reader.IsDBNull(2) ? null : reader.GetString(2);
+                }
             }
-            if (Convert.ToInt32(peticionExiste) == 0)
+            if (usernameSolicitante == null)
                 return NotFound(new { mensaje = "Petición no encontrada." });
+            if (!string.Equals(estatusPeticion, "PENDIENTE", StringComparison.OrdinalIgnoreCase))
+                return Conflict(new { mensaje = "Esta petición ya fue atendida." });
 
             var restablecePassword = !string.IsNullOrWhiteSpace(dto.NuevaPassword);
-            string? usernameSolicitante = null;
             UsuariosInterno? usuarioSolicitante = null;
+            await using var transaction = await _context.Database.BeginTransactionAsync();
 
             if (restablecePassword)
             {
-                using (var cmd = _context.Database.GetDbConnection().CreateCommand())
-                {
-                    cmd.CommandText = "SELECT username_solicitante FROM Peticiones_Soporte WHERE id_peticion = @id";
-                    var p = cmd.CreateParameter(); p.ParameterName = "@id"; p.Value = id; cmd.Parameters.Add(p);
-                    await _context.Database.OpenConnectionAsync();
-                    var result = await cmd.ExecuteScalarAsync();
-                    usernameSolicitante = result?.ToString();
-                }
-
-                if (string.IsNullOrEmpty(usernameSolicitante))
-                    return NotFound(new { mensaje = "Petición no encontrada." });
+                if (string.IsNullOrWhiteSpace(correoContacto) || !MailAddress.TryCreate(correoContacto, out _))
+                    return BadRequest(new { mensaje = "La petición no tiene un correo válido. Solicite que el usuario vuelva a enviarla." });
+                if (!System.Text.RegularExpressions.Regex.IsMatch(dto.NuevaPassword!, @"^(?=.*[A-Z])(?=.*\d)(?=.*[\W_]).{6,}$"))
+                    return BadRequest(new { mensaje = "La contraseña temporal debe tener al menos 6 caracteres, una mayúscula, un número y un carácter especial." });
 
                 usuarioSolicitante = await _context.UsuariosInternos.FirstOrDefaultAsync(u => u.Username == usernameSolicitante);
                 if (usuarioSolicitante == null)
@@ -199,26 +216,34 @@ namespace RegistroCivilAPI.Controllers
                 usuarioSolicitante.PasswordHash = BCrypt.Net.BCrypt.HashPassword(dto.NuevaPassword!);
                 usuarioSolicitante.RequiereCambioPassword = true;
                 await _context.SaveChangesAsync();
+                bool correoEnviado = await _emailService.EnviarCorreoRecuperacionAsync(correoContacto, usuarioSolicitante.NombreCompleto, usuarioSolicitante.Username, dto.NuevaPassword!);
+                if (!correoEnviado)
+                {
+                    await transaction.RollbackAsync();
+                    return StatusCode(502, new { mensaje = "No se pudo enviar el correo. No se cambió la contraseña; verifique la configuración de correo e inténtelo de nuevo." });
+                }
             }
 
             try
             {
                 await _context.Database.ExecuteSqlRawAsync(
                     "UPDATE Peticiones_Soporte SET estatus = 'RESUELTA', respuesta = {0}, leido = 0 WHERE id_peticion = {1}",
-                    respuestaSegura, id);
+                    restablecePassword ? "Contraseña temporal enviada al correo proporcionado. Deberá cambiarla al iniciar sesión." : respuestaSegura, id);
                 var detalleResolucion = restablecePassword
                     ? $"Petición resuelta; contraseña temporal restablecida para {usuarioSolicitante!.Username}; nombre: {usuarioSolicitante.NombreCompleto}. Se solicitará una contraseña personal al ingresar."
                     : $"Petición resuelta para {usernameSolicitante ?? "usuario solicitante"}.";
                 _context.BitacoraAuditoria.Add(await BitacoraHelper.CrearAsync(User, _context, "Peticiones_Soporte", "UPDATE", id.ToString(), "PENDIENTE", detalleResolucion));
                 await _context.SaveChangesAsync();
+                await transaction.CommitAsync();
             }
             catch (Exception ex)
             {
+                await transaction.RollbackAsync();
                 _logger.LogError(ex, "Error al resolver la petición de soporte {IdPeticion}.", id);
                 return StatusCode(500, new { mensaje = "No se pudo resolver la petición por un error interno. Revisa los registros del servidor." });
             }
 
-            return Ok(new { mensaje = restablecePassword ? "Contraseña restablecida y petición resuelta." : "Petición marcada como resuelta y mensaje enviado al usuario." });
+            return Ok(new { mensaje = restablecePassword ? "Contraseña restablecida y enviada al correo proporcionado. El usuario deberá cambiarla al iniciar sesión." : "Petición marcada como resuelta y mensaje enviado al usuario." });
         }
 
         [HttpPut("MarcarLeidasAdmin")]
@@ -244,7 +269,7 @@ namespace RegistroCivilAPI.Controllers
         }
     }
 
-    public class NuevaPeticionDTO { public string Username { get; set; } public string Tipo { get; set; } public string Descripcion { get; set; } }
+    public class NuevaPeticionDTO { public string Username { get; set; } public string Tipo { get; set; } public string Descripcion { get; set; } public string? Correo { get; set; } }
     public class RespuestaDTO
     {
         public string Respuesta { get; set; } = string.Empty;

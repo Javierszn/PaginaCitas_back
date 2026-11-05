@@ -13,6 +13,7 @@ namespace RegistroCivilAPI.Services
 {
     public interface IEmailService
     {
+        Task<bool> EnviarCorreoRecuperacionAsync(string correoDestino, string nombre, string username, string passwordTemporal);
         Task EnviarCorreoConfirmacionAsync(
             string? correoDestino,
             string identificador,
@@ -56,6 +57,55 @@ namespace RegistroCivilAPI.Services
             _config = config;
             _httpClientFactory = httpClientFactory;
             _logger = logger;
+        }
+
+        public async Task<bool> EnviarCorreoRecuperacionAsync(string correoDestino, string nombre, string username, string passwordTemporal)
+        {
+            if (string.IsNullOrWhiteSpace(correoDestino) || string.IsNullOrWhiteSpace(passwordTemporal)) return false;
+            string apiKey = _config["EmailSettings:ApiKey"] ?? _config["EmailSettings:PasswordApp"] ?? string.Empty;
+            string correoOrigen = _config["EmailSettings:Correo"] ?? string.Empty;
+            if (string.IsNullOrWhiteSpace(apiKey) || string.IsNullOrWhiteSpace(correoOrigen))
+            {
+                _logger?.LogError("No se envió la recuperación: falta configurar EmailSettings:ApiKey y EmailSettings:Correo.");
+                return false;
+            }
+
+            try
+            {
+                string nombreHtml = WebUtility.HtmlEncode(nombre);
+                string usernameHtml = WebUtility.HtmlEncode(username);
+                string passwordHtml = WebUtility.HtmlEncode(passwordTemporal);
+                string html = $@"<div style='font-family:Arial,sans-serif;color:#333;max-width:560px;margin:auto;padding:28px;border:1px solid #ddd;border-radius:8px'>
+                    <h2 style='color:#055A1C'>Restablecimiento de contraseña</h2>
+                    <p>Hola {nombreHtml},</p><p>El administrador restableció la contraseña de la cuenta <b>{usernameHtml}</b>.</p>
+                    <p>Contraseña temporal: <b style='font-size:18px'>{passwordHtml}</b></p>
+                    <p>Al iniciar sesión deberá crear una contraseña personal nueva. Si no solicitó este cambio, contacte al administrador.</p></div>";
+                using var request = new HttpRequestMessage(HttpMethod.Post, "https://api.brevo.com/v3/smtp/email");
+                request.Headers.Add("api-key", apiKey);
+                request.Content = new StringContent(JsonSerializer.Serialize(new
+                {
+                    sender = new { name = "Registro Civil Citas SLP", email = correoOrigen },
+                    to = new[] { new { email = correoDestino.Trim(), name = nombre } },
+                    subject = "Contraseña temporal de acceso",
+                    htmlContent = html
+                }), Encoding.UTF8, "application/json");
+                using var client = _httpClientFactory != null ? _httpClientFactory.CreateClient() : new HttpClient();
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+                using var response = await client.SendAsync(request, cts.Token);
+                if (!response.IsSuccessStatusCode)
+                {
+                    var detail = await response.Content.ReadAsStringAsync();
+                    _logger?.LogError("Brevo rechazó el correo de recuperación. Código: {Status}. Detalle: {Detalle}", (int)response.StatusCode, detail);
+                    return false;
+                }
+                _logger?.LogInformation("Correo de recuperación enviado a {Destino}.", correoDestino);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogError(ex, "Error al enviar el correo de recuperación.");
+                return false;
+            }
         }
 
         public async Task EnviarCorreoConfirmacionAsync(

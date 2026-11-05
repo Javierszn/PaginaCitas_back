@@ -228,6 +228,19 @@ namespace RegistroCivilAPI.Controllers
                     .Distinct()
                     .ToList();
 
+                // El mismo teléfono no puede mantener dos citas activas del mismo trámite,
+                // aunque se capture otra CURP, fecha u oficina. Al terminar/cancelar la cita,
+                // el teléfono vuelve a estar disponible porque solo se consulta en citas activas.
+                bool telefonoYaTieneEsteTramiteActivo = await _context.Citas.AnyAsync(c =>
+                    c.IdTramite == solicitud.IdTramite &&
+                    (c.Estatus == "PROGRAMADA" || c.Estatus == "CONFIRMADA" || c.Estatus == "REPROGRAMADA" ||
+                     c.Estatus == "CANCELADA_INHABIL" || c.Estatus == "PRESENCIAL_PENDIENTE") &&
+                    c.IdCiudadanoNavigation.Telefono != null &&
+                    telefonosParaComparar.Contains(c.IdCiudadanoNavigation.Telefono));
+
+                if (telefonoYaTieneEsteTramiteActivo)
+                    return BadRequest(new { mensaje = "Este teléfono ya tiene una cita activa para este trámite. Debe resolverse antes de reservar otra." });
+
                 DateTime limiteCastigo = DateTime.UtcNow.AddHours(-6).AddDays(-7);
                 var penalizado = await _context.Citas.AnyAsync(c => c.IdCiudadano == ciudadano.IdCiudadano && c.Estatus == "NO_ASISTIO" && c.FechaHoraInicio >= limiteCastigo);
                 if (penalizado)
@@ -546,7 +559,8 @@ namespace RegistroCivilAPI.Controllers
             }
 
             await AutoActualizarInasistenciasAsync();
-            var query = _context.Citas.Include(c => c.IdCiudadanoNavigation).Include(c => c.IdTramiteNavigation).Where(c => c.IdSede == idSede).AsQueryable();
+            var query = _context.Citas.Include(c => c.IdCiudadanoNavigation).Include(c => c.IdTramiteNavigation).AsQueryable();
+            if (idSede > 0) query = query.Where(c => c.IdSede == idSede);
 
             if (!string.IsNullOrWhiteSpace(busqueda))
             {
@@ -578,6 +592,7 @@ namespace RegistroCivilAPI.Controllers
                     ciudadano = $"{c.IdCiudadanoNavigation.Nombre} {c.IdCiudadanoNavigation.PrimerApellido} {c.IdCiudadanoNavigation.SegundoApellido}".Trim(),
                     curp = c.IdCiudadanoNavigation.Curp,
                     tramite = c.IdTramiteNavigation.NombreTramite,
+                    sede = c.IdSedeNavigation.Nombre,
                     fechaStr = c.FechaHoraInicio.ToString("dd/MM/yyyy"),
                     hora = c.FechaHoraInicio.ToString("HH:mm"),
                   estatus = c.Estatus,
