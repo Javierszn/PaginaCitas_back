@@ -8,6 +8,7 @@ using Microsoft.AspNetCore.Authorization;
 using System.ComponentModel.DataAnnotations;
 using System;
 using System.Security.Claims;
+using System.Net.Mail;
 using RegistroCivilAPI.Services;
 
 namespace RegistroCivilAPI.Controllers
@@ -35,6 +36,8 @@ namespace RegistroCivilAPI.Controllers
                     u.IdUsuario,
                     u.Username,
                     u.NombreCompleto,
+                    u.Correo,
+                    u.Telefono,
                     u.Activo,
                     u.IdSede,
                     Rol = u.IdRolNavigation.NombreRol,
@@ -58,9 +61,12 @@ namespace RegistroCivilAPI.Controllers
         {
             dto.Username = dto.Username.Trim();
             dto.NombreCompleto = dto.NombreCompleto.Trim();
+            dto.Correo = dto.Correo?.Trim();
 
             if (string.IsNullOrWhiteSpace(dto.Username) || string.IsNullOrWhiteSpace(dto.NombreCompleto))
                 return BadRequest(new { mensaje = "El nombre de usuario y el nombre completo son obligatorios." });
+            if (!string.IsNullOrWhiteSpace(dto.Correo) && !MailAddress.TryCreate(dto.Correo, out _))
+                return BadRequest(new { mensaje = "El correo electrónico no es válido." });
 
             if (await _context.UsuariosInternos.AnyAsync(u => u.Username.ToUpper() == dto.Username.ToUpper()))
                 return BadRequest(new { mensaje = "El nombre de usuario ya existe." });
@@ -81,6 +87,7 @@ namespace RegistroCivilAPI.Controllers
             {
                 Username = dto.Username,
                 NombreCompleto = dto.NombreCompleto,
+                Correo = string.IsNullOrWhiteSpace(dto.Correo) ? null : dto.Correo,
                 PasswordHash = BCrypt.Net.BCrypt.HashPassword(dto.Password),
                 IdRol = dto.IdRol,
                 IdSede = dto.IdSede,
@@ -94,6 +101,89 @@ namespace RegistroCivilAPI.Controllers
             await _context.SaveChangesAsync();
 
             return Ok(new { mensaje = "Usuario creado exitosamente." });
+        }
+
+        [HttpPut("{id}/activar-cuenta")]
+        [Authorize]
+        public async Task<ActionResult> ActivarCuenta(int id, [FromBody] ActivarCuentaDTO dto)
+        {
+            var idAutenticado = await ObtenerIdUsuarioAutenticadoAsync();
+            if (idAutenticado != id)
+                return Forbid();
+
+            var usuario = await _context.UsuariosInternos.FindAsync(id);
+            if (usuario == null) return NotFound(new { mensaje = "Usuario no encontrado." });
+            var correo = dto.Correo?.Trim();
+            var telefono = dto.Telefono?.Trim();
+            if (!MailAddress.TryCreate(correo, out _))
+                return BadRequest(new { mensaje = "Captura un correo electrónico válido." });
+            if (!TelefonoValido(telefono))
+                return BadRequest(new { mensaje = "Captura un teléfono válido de 7 a 20 caracteres." });
+
+            usuario.PasswordHash = BCrypt.Net.BCrypt.HashPassword(dto.Password);
+            usuario.Correo = correo;
+            usuario.Telefono = telefono;
+            usuario.RequiereCambioPassword = false;
+            _context.BitacoraAuditoria.Add(await BitacoraHelper.CrearAsync(
+                User, _context, "Usuarios_Internos", "UPDATE", id.ToString(), null,
+                $"Contraseña personal y datos de contacto actualizados para {usuario.Username}; nombre: {usuario.NombreCompleto}."));
+            await _context.SaveChangesAsync();
+            return Ok(new { mensaje = "Contraseña y datos de seguridad actualizados." });
+        }
+
+        [HttpPut("{id}/perfil")]
+        [Authorize]
+        public async Task<ActionResult> ActualizarPerfil(int id, [FromBody] PerfilUsuarioDTO dto)
+        {
+            var idAutenticado = await ObtenerIdUsuarioAutenticadoAsync();
+            if (idAutenticado != id)
+                return Forbid();
+
+            var usuario = await _context.UsuariosInternos.FindAsync(id);
+            if (usuario == null) return NotFound(new { mensaje = "Usuario no encontrado." });
+            var correo = dto.Correo?.Trim();
+            var telefono = dto.Telefono?.Trim();
+            if (!MailAddress.TryCreate(correo, out _))
+                return BadRequest(new { mensaje = "Captura un correo electrónico válido." });
+            if (!TelefonoValido(telefono))
+                return BadRequest(new { mensaje = "Captura un teléfono válido de 7 a 20 caracteres." });
+
+            var correoAnterior = usuario.Correo;
+            var telefonoAnterior = usuario.Telefono;
+            usuario.Correo = correo;
+            usuario.Telefono = telefono;
+            _context.BitacoraAuditoria.Add(await BitacoraHelper.CrearAsync(
+                User, _context, "Usuarios_Internos", "UPDATE", id.ToString(),
+                $"Correo: {correoAnterior ?? "Sin correo"}; teléfono: {telefonoAnterior ?? "Sin teléfono"}",
+                $"Correo: {correo}; teléfono: {telefono}"));
+            await _context.SaveChangesAsync();
+            return Ok(new { mensaje = "Datos de contacto actualizados.", correo = usuario.Correo, telefono = usuario.Telefono });
+        }
+
+        private static bool TelefonoValido(string? telefono) =>
+            !string.IsNullOrWhiteSpace(telefono) && telefono.Trim().Length is >= 7 and <= 20 && telefono.Any(char.IsDigit);
+
+        private async Task<int?> ObtenerIdUsuarioAutenticadoAsync()
+        {
+            var tiposId = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            {
+                ClaimTypes.NameIdentifier, "nameid", "nameidentifier", "id_usuario", "IdUsuario"
+            };
+            var id = User.Claims
+                .Where(claim => tiposId.Contains(claim.Type))
+                .Select(claim => int.TryParse(claim.Value, out var parsed) ? (int?)parsed : null)
+                .FirstOrDefault(value => value.HasValue);
+            if (id.HasValue) return id;
+
+            var username = User.FindFirst(ClaimTypes.Name)?.Value
+                ?? User.FindFirst("unique_name")?.Value
+                ?? User.FindFirst("sub")?.Value;
+            if (string.IsNullOrWhiteSpace(username)) return null;
+
+            return await _context.UsuariosInternos.AsNoTracking()
+                .Where(user => user.Username == username)
+                .Select(user => (int?)user.IdUsuario)
+                .SingleOrDefaultAsync();
         }
 
         [HttpPut("{id}/estado")]
@@ -289,8 +379,27 @@ namespace RegistroCivilAPI.Controllers
         [Required(ErrorMessage = "El nombre completo es obligatorio.")]
         public string NombreCompleto { get; set; }
 
+        [EmailAddress(ErrorMessage = "El correo electrónico no es válido.")]
+        [MaxLength(100)]
+        public string? Correo { get; set; }
+
         public int IdRol { get; set; }
         public int IdSede { get; set; }
+    }
+
+    public class ActivarCuentaDTO
+    {
+        [Required]
+        [RegularExpression(@"^(?=.*[A-Z])(?=.*\d)(?=.*[\W_]).{6,}$", ErrorMessage = "La contraseña debe tener mínimo 6 caracteres, 1 mayúscula, 1 número y 1 carácter especial.")]
+        public string Password { get; set; }
+        [Required, EmailAddress, MaxLength(100)] public string Correo { get; set; }
+        [Required, MaxLength(20)] public string Telefono { get; set; }
+    }
+
+    public class PerfilUsuarioDTO
+    {
+        [Required, EmailAddress, MaxLength(100)] public string Correo { get; set; }
+        [Required, MaxLength(20)] public string Telefono { get; set; }
     }
 
     public class PasswordDTO

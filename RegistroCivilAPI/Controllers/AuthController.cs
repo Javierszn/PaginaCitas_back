@@ -129,6 +129,8 @@ namespace RegistroCivilAPI.Controllers
                 idUsuario = user.IdUsuario,
                 username = user.Username,
                 nombreCompleto = user.NombreCompleto,
+                correo = user.Correo,
+                telefono = user.Telefono,
                 rol = user.IdRolNavigation.NombreRol,
                 idSede = user.IdSede,
                 sede = user.IdSedeNavigation.Nombre,

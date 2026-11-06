@@ -10,6 +10,8 @@ namespace RegistroCivilAPI.Models
         public string Username { get; set; } = null!;
         public string PasswordHash { get; set; } = null!;
         public string NombreCompleto { get; set; } = null!;
+        public string? Correo { get; set; }
+        public string? Telefono { get; set; }
         public int IdRol { get; set; }
         public int IdSede { get; set; }
         public bool? Activo { get; set; }

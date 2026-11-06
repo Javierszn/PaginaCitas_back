@@ -184,6 +184,8 @@ public partial class RegistroCivilCitasContext : DbContext
             entity.Property(e => e.IdSede).HasColumnName("id_sede");
             entity.Property(e => e.NombreCompleto).HasMaxLength(100).IsUnicode(false).HasColumnName("nombre_completo");
             entity.Property(e => e.PasswordHash).HasMaxLength(255).IsUnicode(false).HasColumnName("password_hash");
+            entity.Property(e => e.Correo).HasMaxLength(100).IsUnicode(false).HasColumnName("correo");
+            entity.Property(e => e.Telefono).HasMaxLength(20).IsUnicode(false).HasColumnName("telefono");
             entity.Property(e => e.Username).HasMaxLength(50).IsUnicode(false).HasColumnName("username");
 
        
