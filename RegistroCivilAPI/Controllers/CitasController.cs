@@ -162,8 +162,8 @@ namespace RegistroCivilAPI.Controllers
                 string nombreBuscado = string.IsNullOrWhiteSpace(solicitud.Nombre) ? null : solicitud.Nombre.Trim();
                 string telLimpio = new string((solicitud.Telefono ?? string.Empty).Where(char.IsDigit).ToArray());
 
-                if (string.IsNullOrWhiteSpace(telLimpio) || telLimpio.Length < 8 || telLimpio.Length > 15)
-                    return BadRequest(new { mensaje = "El teléfono es obligatorio e incluye la lada del país. Capture un número válido de 8 a 15 dígitos." });
+                if (telLimpio.Length != 10)
+                    return BadRequest(new { mensaje = "El teléfono debe contener exactamente 10 dígitos." });
 
                 if (string.IsNullOrWhiteSpace(curpBuscado) && string.IsNullOrWhiteSpace(nombreBuscado))
                     return BadRequest(new { mensaje = "Debe proporcionar la CURP o el nombre completo para identificar a la persona." });
